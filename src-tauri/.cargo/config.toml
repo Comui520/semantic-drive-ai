@@ -1,0 +1,3 @@
+[target.x86_64-pc-windows-gnu]
+# Static CRT linking to avoid dependency on UCRT DLLs
+rustflags = ["-C", "target-feature=+crt-static"]

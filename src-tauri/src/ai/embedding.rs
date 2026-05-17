@@ -6,7 +6,7 @@ use std::path::Path;
 const EMBEDDING_DIM: usize = 384;
 const MAX_SEQ_LEN: usize = 512;
 
-/// Text embedding engine using BGE-small-zh model via Candle (pure Rust).
+/// Text embedding engine using BGE model via Candle (pure Rust).
 ///
 /// Falls back to character n-gram hashing when the model is not loaded,
 /// so the app remains functional without downloaded models.
@@ -15,6 +15,10 @@ pub struct EmbeddingEngine {
     tokenizer: Option<tokenizers::Tokenizer>,
     device: Device,
     dim: usize,
+    /// Instruction prefix prepended before each text for BGE models.
+    /// Chinese: "为这个句子生成向量表示: "
+    /// English: "Represent this sentence for searching relevant passages: "
+    instruction_prefix: String,
 }
 
 impl EmbeddingEngine {
@@ -24,7 +28,15 @@ impl EmbeddingEngine {
             tokenizer: None,
             device: Device::Cpu,
             dim: EMBEDDING_DIM,
+            instruction_prefix: "为这个句子生成向量表示: ".to_string(),
         }
+    }
+
+    /// Create engine with a custom instruction prefix (e.g. for BGE-base-en).
+    pub fn with_prefix(prefix: &str) -> Self {
+        let mut s = Self::new();
+        s.instruction_prefix = prefix.to_string();
+        s
     }
 
     /// Returns true if the BGE model is loaded and ready for embedding.
@@ -39,7 +51,8 @@ impl EmbeddingEngine {
     pub fn load(&mut self, model_dir: &Path) -> Result<(), String> {
         let tokenizer_path = model_dir.join("tokenizer.json");
         let config_path = model_dir.join("config.json");
-        let model_path = model_dir.join("model.safetensors");
+        let safetensors_path = model_dir.join("model.safetensors");
+        let pytorch_path = model_dir.join("pytorch_model.bin");
 
         if !tokenizer_path.exists() {
             return Err(format!("Tokenizer not found: {}", tokenizer_path.display()));
@@ -47,8 +60,12 @@ impl EmbeddingEngine {
         if !config_path.exists() {
             return Err(format!("Config not found: {}", config_path.display()));
         }
-        if !model_path.exists() {
-            return Err(format!("Model not found: {}", model_path.display()));
+        if !safetensors_path.exists() && !pytorch_path.exists() {
+            return Err(format!(
+                "No model weights found at {} or {}",
+                safetensors_path.display(),
+                pytorch_path.display()
+            ));
         }
 
         // Load tokenizer
@@ -61,16 +78,35 @@ impl EmbeddingEngine {
         let config: BertConfig = serde_json::from_str(&config_content)
             .map_err(|e| format!("Failed to parse BERT config: {}", e))?;
 
-        // Load model weights from safetensors via memory mapping
-        let model_path_str = model_path.to_string_lossy().to_string();
-        let vb = unsafe {
-            VarBuilder::from_mmaped_safetensors(
-                &[model_path_str],
+        // Load model weights — try safetensors first (mmap, zero-copy), fall back to PyTorch
+        let safetensors_valid = safetensors_path.exists()
+            && safetensors_path.metadata().map(|m| m.len()).unwrap_or(0) > 1024;
+
+        let vb = if safetensors_valid {
+            let model_path_str = safetensors_path.to_string_lossy().to_string();
+            unsafe {
+                VarBuilder::from_mmaped_safetensors(
+                    &[model_path_str],
+                    candle_core::DType::F32,
+                    &self.device,
+                )
+            }
+            .map_err(|e| format!("Failed to load safetensors weights: {}", e))?
+        } else if pytorch_path.exists() {
+            VarBuilder::from_pth(
+                &pytorch_path,
                 candle_core::DType::F32,
                 &self.device,
             )
-        }
-        .map_err(|e| format!("Failed to load model weights: {}", e))?;
+            .map_err(|e| format!("Failed to load PyTorch weights: {}", e))?
+        } else {
+            return Err(format!(
+                "No valid model weights found at {} (safetensors: {}b) or {}",
+                safetensors_path.display(),
+                safetensors_path.metadata().map(|m| m.len()).unwrap_or(0),
+                pytorch_path.display(),
+            ));
+        };
 
         let model = BertModel::load(vb, &config)
             .map_err(|e| format!("Failed to create BERT model: {}", e))?;
@@ -100,6 +136,20 @@ impl EmbeddingEngine {
         }
     }
 
+    /// Embed multiple texts in a single batched forward pass.
+    /// Falls back to sequential embed() when model is not loaded.
+    pub fn embed_batch(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        if texts.is_empty() {
+            return Vec::new();
+        }
+        if let (Some(model), Some(tokenizer)) = (&self.model, &self.tokenizer) {
+            self.embed_batch_with_model(texts, model, tokenizer)
+                .unwrap_or_else(|| texts.iter().map(|t| self.fallback_embed(t)).collect())
+        } else {
+            texts.iter().map(|t| self.fallback_embed(t)).collect()
+        }
+    }
+
     /// Compute cosine similarity between two L2-normalized vectors.
     pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
@@ -115,8 +165,8 @@ impl EmbeddingEngine {
         model: &BertModel,
         tokenizer: &tokenizers::Tokenizer,
     ) -> Option<Vec<f32>> {
-        // BGE uses an instruction prefix for Chinese
-        let input = format!("为这个句子生成向量表示: {}", text);
+        // BGE instruction prefix (Chinese or English depending on model)
+        let input = format!("{} {}", self.instruction_prefix, text);
 
         let encoding = tokenizer.encode(input, true).ok()?;
         let ids = encoding.get_ids();
@@ -138,6 +188,64 @@ impl EmbeddingEngine {
 
         // Convert to flat Vec<f32>
         normalized.flatten_all().ok()?.to_vec1().ok()
+    }
+
+    /// Batched BGE model inference — tokenizes all texts, pads to common length,
+    /// runs a single forward pass, then splits pooled vectors per sequence.
+    fn embed_batch_with_model(
+        &self,
+        texts: &[String],
+        model: &BertModel,
+        tokenizer: &tokenizers::Tokenizer,
+    ) -> Option<Vec<Vec<f32>>> {
+        // 1. Tokenize all texts
+        let all_encodings: Vec<_> = texts.iter().map(|text| {
+            let input = format!("{} {}", self.instruction_prefix, text);
+            tokenizer.encode(input, true).ok()
+        }).collect();
+
+        // 2. Find max length for padding
+        let max_len = all_encodings.iter()
+            .filter_map(|e| e.as_ref().map(|e| e.get_ids().len().min(MAX_SEQ_LEN)))
+            .max()?;
+
+        let batch_size = texts.len();
+        let mut input_ids_vec = vec![0u32; batch_size * max_len];
+        let mut attention_mask_vec = vec![0u32; batch_size * max_len];
+        let mut token_type_ids_vec = vec![0u32; batch_size * max_len];
+
+        for (i, enc_opt) in all_encodings.iter().enumerate() {
+            let enc = enc_opt.as_ref()?;
+            let ids = enc.get_ids();
+            let mask = enc.get_attention_mask();
+            let type_ids = enc.get_type_ids();
+            let len = ids.len().min(max_len);
+            let offset = i * max_len;
+            input_ids_vec[offset..offset + len].copy_from_slice(&ids[..len]);
+            attention_mask_vec[offset..offset + len].copy_from_slice(&mask[..len]);
+            token_type_ids_vec[offset..offset + len].copy_from_slice(&type_ids[..len]);
+        }
+
+        // 3. Create batched tensors
+        let input_ids = Tensor::from_slice(&input_ids_vec, (batch_size, max_len), &self.device).ok()?;
+        let attention_mask = Tensor::from_slice(&attention_mask_vec, (batch_size, max_len), &self.device).ok()?;
+        let token_type_ids = Tensor::from_slice(&token_type_ids_vec, (batch_size, max_len), &self.device).ok()?;
+
+        // 4. Single batched forward pass
+        let last_hidden = model.forward(&input_ids, &attention_mask, Some(&token_type_ids)).ok()?;
+
+        // 5. Mean pooling + L2 normalize
+        let pooled = mean_pooling(&last_hidden, &attention_mask).ok()?;
+        let normalized = l2_normalize(&pooled).ok()?;
+
+        // 6. Split into per-sequence vectors
+        let flat: Vec<f32> = normalized.flatten_all().ok()?.to_vec1().ok()?;
+        let dim = flat.len() / batch_size;
+        let result: Vec<Vec<f32>> = (0..batch_size)
+            .map(|i| flat[i * dim..(i + 1) * dim].to_vec())
+            .collect();
+
+        Some(result)
     }
 
     /// Fallback: character n-gram hashing (works without any model).

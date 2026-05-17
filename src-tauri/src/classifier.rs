@@ -37,50 +37,113 @@ pub struct TagInfo {
     pub count: u64,
 }
 
-/// Classify files using embedding-based similarity and extension fallback.
-pub fn classify_files(
+/// Extract the year (first 4 chars) from a modified timestamp string, safely.
+fn extract_year(modified: &str) -> Option<u32> {
+    modified.get(..4).and_then(|s| s.parse::<u32>().ok())
+}
+
+/// Generate per-file tags from filename and metadata (comma-separated).
+pub fn generate_tags_for_file(file: &FileEntry) -> String {
+    let mut tags: Vec<String> = Vec::new();
+    if let Some(year) = extract_year(&file.modified) {
+        tags.push(format!("{}年", year));
+    }
+    if !file.extension.is_empty() {
+        tags.push(file.extension.to_uppercase());
+    }
+    for part in file.name.split(['_', '-', ' ', '.', '（', '）', '(', ')']) {
+        let part = part.trim();
+        if part.len() >= 2 && !part.chars().all(|c| c.is_ascii_digit()) {
+            let s = part.to_string();
+            if !tags.contains(&s) {
+                tags.push(s);
+            }
+        }
+    }
+    tags.join(",")
+}
+
+/// Batch-classify all files, returning aggregate result + per-file categories and tags.
+///
+/// Embeds anchors once, then embeds file signatures in chunks of 128 to avoid OOM.
+/// If the embedding engine returns None (model not loaded), falls back to extension-only.
+pub fn classify_files_batch(
     files: &[FileEntry],
-    embedding_engine: &EmbeddingEngine,
-) -> ClassificationResult {
-    // Pre-compute category anchor embeddings
-    let anchor_embeddings: Vec<(&str, Vec<f32>)> = CATEGORY_ANCHORS
+    engine: &EmbeddingEngine,
+) -> (ClassificationResult, Vec<(String, String)>, Vec<(String, String)>) {
+    // 1. Batch-embed all 10 anchor descriptions (1 forward pass)
+    let anchor_texts: Vec<String> = CATEGORY_ANCHORS.iter().map(|(_, d)| d.to_string()).collect();
+    let anchor_embs = engine.embed_batch(&anchor_texts);
+
+    // 2. Build text signatures for all files
+    let signatures: Vec<String> = files
         .iter()
-        .map(|(name, desc)| (*name, embedding_engine.embed(desc)))
+        .map(|f| format!("{} {}", f.name, f.path.replace('/', " ")))
         .collect();
 
+    // 3. Batch-embed signatures in chunks of 128 to avoid OOM
+    let mut file_embs: Vec<Vec<f32>> = Vec::with_capacity(signatures.len());
+    for chunk in signatures.chunks(32) {
+        file_embs.extend(engine.embed_batch(chunk));
+    }
+
+    // 4. Compare each file embedding against anchors (pure math)
     let mut categories: HashMap<String, (u64, u64)> = HashMap::new();
     let mut tag_counts: HashMap<String, u64> = HashMap::new();
+    let mut per_file_cats: Vec<(String, String)> = Vec::with_capacity(files.len());
+    let mut per_file_tags: Vec<(String, String)> = Vec::with_capacity(files.len());
 
-    for file in files {
-        // Determine category: embedding-based with extension fallback
-        let cat = classify_file(file, &anchor_embeddings, embedding_engine);
+    for (i, file) in files.iter().enumerate() {
+        let file_emb = &file_embs[i];
 
-        let (count, size) = categories.entry(cat.to_string()).or_insert((0, 0));
+        let mut best_score = 0.25f32;
+        let mut best_cat = extension_fallback(&file.extension);
+
+        if !file_emb.is_empty() {
+            for (j, (cat_name, _)) in CATEGORY_ANCHORS.iter().enumerate() {
+                let score = EmbeddingEngine::cosine_similarity(file_emb, &anchor_embs[j]);
+                if score > best_score {
+                    best_score = score;
+                    best_cat = cat_name;
+                }
+            }
+        }
+
+        let (count, size) = categories.entry(best_cat.to_string()).or_insert((0, 0));
         *count += 1;
         *size += file.size;
 
+        per_file_cats.push((file.id.clone(), best_cat.to_string()));
+
         // Generate tags from filename and path
+        let mut file_tags: Vec<String> = Vec::new();
         for part in file.name.split(['_', '-', ' ', '.', '（', '）', '(', ')']) {
             let part = part.trim();
             if part.len() >= 2 && !part.chars().all(|c| c.is_ascii_digit()) {
                 *tag_counts.entry(part.to_string()).or_insert(0) += 1;
+                if !file_tags.contains(&part.to_string()) {
+                    file_tags.push(part.to_string());
+                }
             }
         }
 
-        // Year-based tags
-        if let Some(year) = &file.modified[..4].parse::<u32>().ok() {
-            *tag_counts.entry(format!("{}年", year)).or_insert(0) += 1;
+        // Year-based tags (safe slicing)
+        if let Some(year) = extract_year(&file.modified) {
+            let yt = format!("{}年", year);
+            *tag_counts.entry(yt.clone()).or_insert(0) += 1;
+            file_tags.push(yt);
         }
 
         // Extension tag
         if !file.extension.is_empty() {
-            *tag_counts
-                .entry(file.extension.to_uppercase())
-                .or_insert(0) += 1;
+            let et = file.extension.to_uppercase();
+            *tag_counts.entry(et.clone()).or_insert(0) += 1;
+            file_tags.push(et);
         }
+
+        per_file_tags.push((file.id.clone(), file_tags.join(",")));
     }
 
-    // Build categories sorted by count
     let mut category_list: Vec<CategoryInfo> = categories
         .into_iter()
         .map(|(name, (count, total_size))| CategoryInfo {
@@ -92,7 +155,6 @@ pub fn classify_files(
         .collect();
     category_list.sort_by(|a, b| b.count.cmp(&a.count));
 
-    // Build tags sorted by count (top 50)
     let mut tag_list: Vec<(String, u64)> = tag_counts.into_iter().collect();
     tag_list.sort_by(|a, b| b.1.cmp(&a.1));
     let tags: Vec<TagInfo> = tag_list
@@ -101,44 +163,10 @@ pub fn classify_files(
         .map(|(name, count)| TagInfo { name, count })
         .collect();
 
-    ClassificationResult {
-        categories: category_list,
-        tags,
-    }
+    (ClassificationResult { categories: category_list, tags }, per_file_cats, per_file_tags)
 }
 
-/// Classify a single file by comparing its name+path embedding to category anchors.
-fn classify_file<'a>(
-    file: &FileEntry,
-    anchors: &'a [(&'a str, Vec<f32>)],
-    engine: &EmbeddingEngine,
-) -> &'a str {
-    // Build a text signature from filename and path
-    let signature = format!("{} {}", file.name, file.path.replace('/', " ").replace('\\', " "));
-    let file_emb = engine.embed(&signature);
-
-    // Find best anchor match
-    let mut best_score = 0.0f32;
-    let mut best_cat = extension_fallback(&file.extension);
-
-    for (cat_name, anchor_emb) in anchors {
-        let score = EmbeddingEngine::cosine_similarity(&file_emb, anchor_emb);
-        if score > best_score {
-            best_score = score;
-            best_cat = cat_name;
-        }
-    }
-
-    // Only use embedding-based classification if confidence is reasonable
-    // Otherwise fall back to extension-based (more predictable)
-    if best_score > 0.25 {
-        best_cat
-    } else {
-        extension_fallback(&file.extension)
-    }
-}
-
-/// Extension-based fallback mapping (same as before but internal).
+/// Extension-based fallback mapping.
 fn extension_fallback(ext: &str) -> &'static str {
     match ext.to_lowercase().as_str() {
         "pdf" | "doc" | "docx" | "txt" | "md" | "rtf" => "工作文档",

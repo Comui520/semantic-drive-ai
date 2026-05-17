@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use walkdir::WalkDir;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -57,9 +58,11 @@ pub fn compute_hash(path: &Path) -> Option<String> {
 
 /// Scan a directory recursively and return file entries.
 /// `root` is the device mount root (absolute path).
-/// `progress_cb` is called periodically with scan progress.
+/// Recursively scan a directory, collecting file metadata.
+/// Skips hidden files, system files, and files under `exclude_dir` (if Some).
 pub fn scan_directory(
     root: &Path,
+    exclude_dir: Option<&Path>,
 ) -> Result<Vec<FileEntry>, String> {
     let mut entries = Vec::new();
     let root_canonical = root
@@ -88,6 +91,15 @@ pub fn scan_directory(
         if let Ok(rel) = path.strip_prefix(&root_canonical) {
             if rel.starts_with(".semanticdrive") {
                 continue;
+            }
+        }
+
+        // Skip files under the excluded directory (e.g. app's own folder)
+        if let Some(exclude) = exclude_dir {
+            if let Ok(exclude_canonical) = exclude.canonicalize() {
+                if path.starts_with(&exclude_canonical) {
+                    continue;
+                }
             }
         }
 
@@ -146,7 +158,8 @@ pub fn scan_directory(
     Ok(entries)
 }
 
-/// Get the root path of the storage device (directory where executable resides)
+/// Get the root path of the storage device (directory where executable resides).
+/// Used for `.semanticdrive/` internal paths (models, DB, cache).
 pub fn get_device_root() -> Result<PathBuf, String> {
     std::env::current_exe()
         .map_err(|e| format!("Cannot determine executable path: {}", e))
@@ -156,4 +169,53 @@ pub fn get_device_root() -> Result<PathBuf, String> {
                 .ok_or_else(|| "No parent directory".to_string())
                 .map(|p| p.to_path_buf())
         })
+}
+
+/// Get the root path for file scanning (parent of the executable directory).
+/// This way if the exe is in `X:\SemanticDrive\`, we scan `X:\` (the whole drive).
+pub fn get_scan_root() -> Result<PathBuf, String> {
+    let exe_dir = get_device_root()?;
+    // Go one level up from exe directory to scan the containing folder/drive root
+    match exe_dir.parent() {
+        Some(parent) => Ok(parent.to_path_buf()),
+        None => Ok(exe_dir), // already at root, can't go up
+    }
+}
+
+/// Start a polling filesystem watcher that checks for changes every 2 seconds.
+/// The callback is called on a background thread for each relevant event.
+/// Returns a `PollWatcher` which must be kept alive for the app's lifetime.
+pub fn start_file_watcher(
+    root: PathBuf,
+    on_event: impl Fn(notify::Event) + Send + 'static,
+) -> Result<notify::PollWatcher, String> {
+    use notify::{Config, RecursiveMode, Watcher};
+
+    let mut watcher = notify::PollWatcher::new(
+        move |res: Result<notify::Event, notify::Error>| {
+            if let Ok(event) = res {
+                if is_relevant_event(&event) {
+                    on_event(event);
+                }
+            }
+        },
+        Config::default().with_poll_interval(Duration::from_secs(2)),
+    )
+    .map_err(|e| format!("Watcher creation failed: {}", e))?;
+
+    watcher
+        .watch(&root, RecursiveMode::Recursive)
+        .map_err(|e| format!("Watch failed: {}", e))?;
+
+    Ok(watcher)
+}
+
+/// Filter events for hidden files, system files, and our own cache directory.
+fn is_relevant_event(event: &notify::Event) -> bool {
+    !event.paths.iter().any(|p| {
+        p.components().any(|c| {
+            let s = c.as_os_str().to_string_lossy();
+            s.starts_with('.') || s.starts_with('$') || s == ".semanticdrive"
+        })
+    })
 }

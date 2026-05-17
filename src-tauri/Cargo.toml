@@ -23,6 +23,7 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
+tauri-plugin-dialog = "2"
 
 # File scanner & watcher
 walkdir = "2"
@@ -44,6 +45,9 @@ humansize = "2"
 
 # Tokio async runtime
 tokio = { version = "1", features = ["full"] }
+
+# Regex for time pattern parsing
+regex = "1"
 
 # Content extraction
 zip = "2"
@@ -71,3 +75,4 @@ base64 = "0.22"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 byteorder = "1.5"
+open = "5"

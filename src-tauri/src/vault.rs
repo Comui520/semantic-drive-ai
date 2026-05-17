@@ -39,7 +39,7 @@ fn generate_salt() -> [u8; SALT_SIZE] {
 }
 
 /// Encrypt data with AES-256-GCM
-fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+pub fn encrypt_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let cipher = Aes256Gcm::new_from_slice(key)
         .map_err(|e| format!("Cipher init failed: {}", e))?;
     let mut nonce_bytes = [0u8; NONCE_SIZE];

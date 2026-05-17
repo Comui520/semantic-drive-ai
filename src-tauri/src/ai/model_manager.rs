@@ -43,6 +43,8 @@ const HF_PRIMARY: &str = "https://huggingface.co";
 const HF_MIRROR: &str = "https://hf-mirror.com";
 
 const MODELS_DIR: &str = ".semanticdrive/models";
+/// Fallback path for manually-downloaded models (e.g. user placed them here).
+const FALLBACK_MODELS_DIR: &str = "D:/aiccfuture/models";
 
 fn models_dir() -> Result<PathBuf, String> {
     let root = crate::scanner::get_device_root()?;
@@ -78,6 +80,30 @@ fn model_file_sets() -> Vec<(&'static str, Vec<ModelFile>, Vec<ModelFile>)> {
             vec![],
         ),
         (
+            "bge-base-zh",
+            vec![
+                ModelFile {
+                    filename: "config.json".to_string(),
+                    remote_name: None,
+                    repo: "BAAI/bge-base-zh-v1.5",
+                    size_rank: 1,
+                },
+                ModelFile {
+                    filename: "tokenizer.json".to_string(),
+                    remote_name: None,
+                    repo: "BAAI/bge-base-zh-v1.5",
+                    size_rank: 1,
+                },
+                ModelFile {
+                    filename: "pytorch_model.bin".to_string(),
+                    remote_name: None,
+                    repo: "BAAI/bge-base-zh-v1.5",
+                    size_rank: 98,
+                },
+            ],
+            vec![],
+        ),
+        (
             "qwen2.5-0.5b",
             vec![
                 ModelFile {
@@ -90,6 +116,66 @@ fn model_file_sets() -> Vec<(&'static str, Vec<ModelFile>, Vec<ModelFile>)> {
                     filename: "tokenizer.json".to_string(),
                     remote_name: None,
                     repo: "Qwen/Qwen2.5-0.5B",
+                    size_rank: 1,
+                },
+            ],
+            vec![],
+        ),
+        (
+            "qwen2.5-1.5b",
+            vec![
+                ModelFile {
+                    filename: "model.gguf".to_string(),
+                    remote_name: Some("Qwen2.5-1.5B.Q4_K_M.gguf".to_string()),
+                    repo: "mradermacher/Qwen2.5-1.5B-GGUF",
+                    size_rank: 99,
+                },
+                ModelFile {
+                    filename: "tokenizer.json".to_string(),
+                    remote_name: None,
+                    repo: "Qwen/Qwen2.5-1.5B",
+                    size_rank: 1,
+                },
+            ],
+            vec![],
+        ),
+        (
+            "bge-base-en",
+            vec![
+                ModelFile {
+                    filename: "config.json".to_string(),
+                    remote_name: None,
+                    repo: "BAAI/bge-base-en-v1.5",
+                    size_rank: 1,
+                },
+                ModelFile {
+                    filename: "tokenizer.json".to_string(),
+                    remote_name: None,
+                    repo: "BAAI/bge-base-en-v1.5",
+                    size_rank: 1,
+                },
+                ModelFile {
+                    filename: "model.safetensors".to_string(),
+                    remote_name: None,
+                    repo: "BAAI/bge-base-en-v1.5",
+                    size_rank: 98,
+                },
+            ],
+            vec![],
+        ),
+        (
+            "qwen2.5-7b",
+            vec![
+                ModelFile {
+                    filename: "model.gguf".to_string(),
+                    remote_name: Some("Qwen2.5-7B-Instruct.Q4_K_M.gguf".to_string()),
+                    repo: "mradermacher/Qwen2.5-7B-Instruct-GGUF",
+                    size_rank: 99,
+                },
+                ModelFile {
+                    filename: "tokenizer.json".to_string(),
+                    remote_name: None,
+                    repo: "Qwen/Qwen2.5-7B-Instruct",
                     size_rank: 1,
                 },
             ],
@@ -116,10 +202,30 @@ pub fn get_models_status() -> Result<Vec<ModelInfo>, String> {
                 "用于文本向量化，实现语义搜索和智能分类",
                 96,
             ),
+            "bge-base-zh" => (
+                "BGE-base-zh 嵌入模型",
+                "中英文通用文本向量化，语义搜索质量更高",
+                409,
+            ),
             "qwen2.5-0.5b" => (
-                "Qwen2.5 语言模型",
+                "Qwen2.5 语言模型 (0.5B)",
                 "用于自然语言查询理解和意图解析",
                 398,
+            ),
+            "qwen2.5-1.5b" => (
+                "Qwen2.5 语言模型 (1.5B)",
+                "更强的查询理解、意图解析，支持文件内容总结",
+                1024,
+            ),
+            "bge-base-en" => (
+                "BGE-base-en 嵌入模型",
+                "英文文本向量化，与中文模型协同实现中英双语语义搜索",
+                409,
+            ),
+            "qwen2.5-7b" => (
+                "Qwen2.5 语言模型 (7B)",
+                "强大的理解和推理能力，支持复杂文件分析与自然对话",
+                4800,
             ),
             _ => continue,
         };
@@ -145,20 +251,30 @@ pub fn all_models_ready() -> Result<bool, String> {
 }
 
 pub fn is_model_ready(model_id: &str) -> Result<bool, String> {
-    let base = models_dir()?;
     let sets = model_file_sets();
     let (_id, required, _optional) = match sets.iter().find(|(id, _, _)| *id == model_id) {
         Some(f) => f,
         None => return Ok(false),
     };
-    let model_dir = base.join(model_id);
-    Ok(required.iter().all(|f| {
-        let path = model_dir.join(&f.filename);
-        path.exists() && path.metadata().map(|md| md.len()).unwrap_or(0) > 0
-    }))
+    let all_exist = |dir: &std::path::Path| -> bool {
+        required.iter().all(|f| {
+            let path = dir.join(&f.filename);
+            path.exists() && path.metadata().map(|md| md.len()).unwrap_or(0) > 0
+        })
+    };
+    // Check primary
+    if let Ok(base) = models_dir() {
+        if all_exist(&base.join(model_id)) {
+            return Ok(true);
+        }
+    }
+    // Check fallback
+    let fallback = std::path::PathBuf::from(FALLBACK_MODELS_DIR).join(model_id);
+    Ok(all_exist(&fallback))
 }
 
 pub fn get_model_path(model_id: &str) -> Result<Option<PathBuf>, String> {
+    // Check primary location first
     let base = models_dir()?;
     let model_dir = base.join(model_id);
     let sets = model_file_sets();
@@ -170,7 +286,21 @@ pub fn get_model_path(model_id: &str) -> Result<Option<PathBuf>, String> {
         let path = model_dir.join(&f.filename);
         path.exists() && path.metadata().map(|md| md.len()).unwrap_or(0) > 0
     });
-    if all_exist { Ok(Some(model_dir)) } else { Ok(None) }
+    if all_exist {
+        return Ok(Some(model_dir));
+    }
+
+    // Fallback: check the manual download location
+    let fallback_dir = PathBuf::from(FALLBACK_MODELS_DIR).join(model_id);
+    let all_exist = required.iter().all(|f| {
+        let path = fallback_dir.join(&f.filename);
+        path.exists() && path.metadata().map(|md| md.len()).unwrap_or(0) > 0
+    });
+    if all_exist {
+        Ok(Some(fallback_dir))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Download a specific model (all its files) with progress callbacks.
@@ -180,7 +310,9 @@ pub fn download_model(
     progress_callback: impl Fn(DownloadProgress),
 ) -> Result<PathBuf, String> {
     match model_id {
-        "bge-small-zh" | "qwen2.5-0.5b" => download_model_files(model_id, progress_callback),
+        "bge-small-zh" | "bge-base-zh" | "bge-base-en" | "qwen2.5-0.5b" | "qwen2.5-1.5b" | "qwen2.5-7b" => {
+            download_model_files(model_id, progress_callback)
+        }
         _ => Err(format!("未知模型: {}", model_id)),
     }
 }
@@ -508,11 +640,24 @@ mod tests {
     #[test]
     fn test_get_models_status_returns_all() {
         let result = get_models_status().unwrap();
-        assert_eq!(result.len(), 2, "should return 2 models");
-        let bge = result.iter().find(|m| m.id == "bge-small-zh");
-        let qwen = result.iter().find(|m| m.id == "qwen2.5-0.5b");
-        assert!(bge.is_some(), "bge should be in status");
-        assert!(qwen.is_some(), "qwen should be in status");
+        assert_eq!(result.len(), 6, "should return 6 models");
+        assert!(result.iter().any(|m| m.id == "bge-small-zh"), "bge-small-zh should be in status");
+        assert!(result.iter().any(|m| m.id == "bge-base-zh"), "bge-base-zh should be in status");
+        assert!(result.iter().any(|m| m.id == "bge-base-en"), "bge-base-en should be in status");
+        assert!(result.iter().any(|m| m.id == "qwen2.5-0.5b"), "qwen2.5-0.5b should be in status");
+        assert!(result.iter().any(|m| m.id == "qwen2.5-1.5b"), "qwen2.5-1.5b should be in status");
+        assert!(result.iter().any(|m| m.id == "qwen2.5-7b"), "qwen2.5-7b should be in status");
+    }
+
+    #[test]
+    fn test_qwen2_5_7b_has_required_files() {
+        let sets = model_file_sets();
+        let (_id, required, _optional) = sets.iter()
+            .find(|(id, _, _)| *id == "qwen2.5-7b")
+            .expect("qwen2.5-7b model should exist");
+        assert_eq!(required.len(), 2, "qwen2.5-7b should have 2 required files");
+        assert!(required.iter().any(|f| f.filename == "model.gguf"));
+        assert!(required.iter().any(|f| f.filename == "tokenizer.json"));
     }
 
     #[test]

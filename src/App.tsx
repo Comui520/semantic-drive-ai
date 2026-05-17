@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import Layout from './components/Layout'
 import SmartSearch from './pages/SmartSearch'
+import SmartAssistant from './pages/SmartAssistant'
 import FileClassify from './pages/FileClassify'
 import OrganizeSuggestions from './pages/OrganizeSuggestions'
 import SecureSpace from './pages/SecureSpace'
@@ -8,6 +9,7 @@ import { useAppStore } from './store/appStore'
 import { useThemeStore } from './store/themeStore'
 
 const pages = {
+  chat: <SmartAssistant />,
   search: <SmartSearch />,
   classify: <FileClassify />,
   organize: <OrganizeSuggestions />,
@@ -22,5 +24,5 @@ export default function App() {
     document.body.className = theme
   }, [theme])
 
-  return <Layout>{pages[currentPage]}</Layout>
+  return <Layout><div key={currentPage} className="h-full animate-fade-in">{pages[currentPage]}</div></Layout>
 }

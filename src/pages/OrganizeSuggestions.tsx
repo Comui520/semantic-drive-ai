@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import { FileWarning, Copy, Trash2, RefreshCw } from 'lucide-react'
 
 interface DuplicateFile {
@@ -23,10 +24,36 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }
 
+interface DedupProgress {
+  status: string
+  current: number
+  total: number
+}
+
 export default function OrganizeSuggestions() {
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([])
   const [loading, setLoading] = useState(false)
   const [totalWasted, setTotalWasted] = useState(0)
+  const [dedupProgress, setDedupProgress] = useState<DedupProgress | null>(null)
+  const [feedback, setFeedback] = useState('')
+  const [feedbackType, setFeedbackType] = useState<'info' | 'error'>('info')
+
+  const showFeedback = (msg: string, type: 'info' | 'error' = 'info') => {
+    setFeedback(msg)
+    setFeedbackType(type)
+    setTimeout(() => setFeedback(''), 5000)
+  }
+
+  const handleDelete = async (filePath: string) => {
+    if (!confirm(`确定要删除 "${filePath}" 吗？此操作不可撤销。`)) return
+    try {
+      await invoke('delete_file', { filePath })
+      showFeedback(`已删除: ${filePath}`)
+      handleFindDuplicates()
+    } catch (err) {
+      showFeedback(`删除失败: ${err}`, 'error')
+    }
+  }
 
   const handleFindDuplicates = async () => {
     setLoading(true)
@@ -44,6 +71,14 @@ export default function OrganizeSuggestions() {
 
   useEffect(() => {
     handleFindDuplicates()
+  }, [])
+
+  // Listen for dedup progress events from backend
+  useEffect(() => {
+    const unlisten = listen<DedupProgress>('dedup-progress', (event) => {
+      setDedupProgress(event.payload)
+    })
+    return () => { unlisten.then(fn => fn()) }
   }, [])
 
   return (
@@ -69,7 +104,33 @@ export default function OrganizeSuggestions() {
       </div>
 
       <div className="flex-1 overflow-auto px-6 pb-6">
-        {loading && (
+        {feedback && (
+          <div className={`glass rounded-xl p-3 mb-4 text-sm border ${
+            feedbackType === 'error'
+              ? 'text-red-400 border-red-500/20'
+              : 'text-accent-teal border-accent-teal/20'
+          }`}>
+            {feedback}
+          </div>
+        )}
+
+        {loading && dedupProgress && dedupProgress.status !== 'done' && (
+          <div className="glass rounded-xl p-6 mb-4">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-sm font-medium">
+                {dedupProgress.status === 'hashing' ? '正在计算文件哈希，检测重复...' : '正在处理...'}
+              </span>
+            </div>
+            <div className="w-full h-2 rounded-full bg-white/10 overflow-hidden">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-accent-cyan to-accent-teal animate-pulse"
+                style={{ width: '50%' }}
+              />
+            </div>
+          </div>
+        )}
+
+        {loading && !dedupProgress && (
           <div className="flex items-center justify-center h-32">
             <RefreshCw size={24} className="text-accent-cyan animate-spin" />
           </div>
@@ -84,8 +145,8 @@ export default function OrganizeSuggestions() {
         )}
 
         <div className="space-y-4">
-          {duplicates.map((group) => (
-            <div key={group.id} className="glass rounded-xl p-4">
+          {duplicates.map((group, idx) => (
+            <div key={group.id} className="glass rounded-xl p-4 animate-slide-up" style={{ animationDelay: `${idx * 80}ms` }}>
               <div className="flex items-center gap-2 mb-3">
                 <FileWarning size={16} className="text-amber-400 shrink-0" />
                 <span className="text-sm text-amber-400">
@@ -113,6 +174,7 @@ export default function OrganizeSuggestions() {
                         {f.modified.slice(0, 10)}
                       </span>
                       <button
+                        onClick={() => handleDelete(f.path)}
                         className="p-1 rounded text-silver-400 hover:text-red-400 hover:bg-white/5"
                         title="删除此副本"
                       >

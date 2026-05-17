@@ -33,14 +33,25 @@ pub fn find_duplicates(files: &[FileEntry], device_root: &Path) -> Vec<Duplicate
 
     let mut hash_map: HashMap<String, Vec<&FileEntry>> = HashMap::new();
 
-    // Second pass: compute hashes for files with same size
+    // Second pass: compute hashes in parallel for files with same size
+    use rayon::prelude::*;
     for (_size, group) in size_map.iter() {
         if group.len() < 2 {
             continue;
         }
-        for file in group {
-            let full_path = device_root.join(&file.path);
-            if let Some(hash) = crate::scanner::compute_hash(&full_path) {
+        let results: Vec<(&FileEntry, Option<String>)> = group
+            .par_iter()
+            .map(|file| {
+                // Use stored hash if available, avoids redundant disk I/O
+                let hash = file.hash.clone().or_else(|| {
+                    let full_path = device_root.join(&file.path);
+                    crate::scanner::compute_hash(&full_path)
+                });
+                (*file, hash)
+            })
+            .collect();
+        for (file, hash_opt) in results {
+            if let Some(hash) = hash_opt {
                 hash_map.entry(hash).or_default().push(file);
             }
         }

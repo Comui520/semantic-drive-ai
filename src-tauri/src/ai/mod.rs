@@ -46,7 +46,12 @@ impl FileCategory {
 /// Extract text content from a file based on its extension
 pub fn extract_text(file_path: &Path, extension: &str) -> Result<String, String> {
     match extension.to_lowercase().as_str() {
-        "txt" | "md" | "csv" | "tsv" | "json" | "xml" | "html" | "htm" | "log" => {
+        "txt" | "md" | "csv" | "tsv" | "json" | "xml" | "html" | "htm" | "log"
+        | "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "java" | "kt" | "dart"
+        | "cpp" | "c" | "h" | "hpp" | "cs" | "rb" | "php" | "swift" | "scala" | "r"
+        | "sh" | "bat" | "ps1" | "pl" | "lua" | "sql" | "vue" | "svelte" | "astro"
+        | "css" | "scss" | "less" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf"
+        | "gradle" | "makefile" | "dockerfile" | "cmake" | "m" | "mm" => {
             extractor::extract_text_plain(file_path)
         }
         "pdf" => extractor::extract_text_pdf(file_path),

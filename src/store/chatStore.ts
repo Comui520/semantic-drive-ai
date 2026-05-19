@@ -32,6 +32,34 @@ export interface ChatTokenEvent {
   done: boolean
 }
 
+// ── AI File Action types ──
+
+export type FileAction =
+  | { cmd: 'rename_file'; params: { old_path: string; new_name: string } }
+  | { cmd: 'delete_file'; params: { file_path: string } }
+  | { cmd: 'move_file'; params: { source: string; destination: string } }
+  | { cmd: 'copy_file'; params: { source: string; destination: string } }
+  | { cmd: 'import_file'; params: { source: string; destination: string } }
+  | { cmd: 'vault_add_file'; params: { file_path: string; password: string } }
+  | { cmd: 'set_file_tags'; params: { file_id: string; tags: string[] } }
+
+export interface ChatActionsEvent {
+  session_id: string
+  actions: FileAction[]
+}
+
+function describeAction(action: FileAction): string {
+  switch (action.cmd) {
+    case 'rename_file': return `重命名「${action.params.old_path}」→「${action.params.new_name}」`
+    case 'delete_file': return `删除「${action.params.file_path}」`
+    case 'move_file': return `移动「${action.params.source}」→「${action.params.destination}」`
+    case 'copy_file': return `复制「${action.params.source}」→「${action.params.destination}」`
+    case 'import_file': return `导入「${action.params.source}」→「${action.params.destination}」`
+    case 'vault_add_file': return `加密添加到安全空间: 「${action.params.file_path}」`
+    case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」到文件`
+  }
+}
+
 interface ChatState {
   sessions: ChatSession[]
   currentSessionId: string | null
@@ -39,6 +67,8 @@ interface ChatState {
   streaming: boolean
   loading: boolean
   error: string | null
+  pendingActions: FileAction[]
+  actionResults: string[]
 
   loadSessions: () => Promise<void>
   createSession: () => Promise<string>
@@ -48,9 +78,12 @@ interface ChatState {
   sendMessage: (content: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[]) => Promise<void>
   stopGeneration: () => Promise<void>
   clearError: () => void
+  confirmActions: () => Promise<void>
+  rejectActions: () => void
 }
 
 let unlistenStream: (() => void) | null = null
+let unlistenActions: (() => void) | null = null
 
 export const useChatStore = create<ChatState>((set, get) => ({
   sessions: [],
@@ -59,6 +92,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   streaming: false,
   loading: false,
   error: null,
+  pendingActions: [],
+  actionResults: [],
 
   clearError: () => set({ error: null }),
 
@@ -69,6 +104,29 @@ export const useChatStore = create<ChatState>((set, get) => ({
     } catch (err) {
       set({ error: `停止失败: ${err}` })
     }
+  },
+
+  confirmActions: async () => {
+    const { pendingActions } = get()
+    if (pendingActions.length === 0) return
+
+    const results: string[] = []
+    for (const action of pendingActions) {
+      try {
+        const result = await invoke<string>('execute_file_action', { actionJson: JSON.stringify(action) })
+        results.push(result)
+      } catch (err) {
+        results.push(`操作失败: ${describeAction(action)} — ${err}`)
+      }
+    }
+
+    set({ pendingActions: [], actionResults: results })
+    // Clear results after 8 seconds
+    setTimeout(() => set({ actionResults: [] }), 8000)
+  },
+
+  rejectActions: () => {
+    set({ pendingActions: [] })
   },
 
   loadSessions: async () => {
@@ -146,69 +204,86 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
     }
 
-    // Clean up previous listener if any, then create a fresh one
-    if (unlistenStream) { unlistenStream(); unlistenStream = null }
+    // ── Setup event listeners (inside try/catch so failures are visible) ──
+    try {
+      if (unlistenStream) { unlistenStream(); unlistenStream = null }
 
-    // Token buffer for 80ms batched state updates
-    let buffer = ''
-    let flushTimer: ReturnType<typeof setTimeout> | null = null
-    let streamSessionId = ''
+      // Token buffer for 80ms batched state updates
+      let buffer = ''
+      let flushTimer: ReturnType<typeof setTimeout> | null = null
+      let streamSessionId = ''
 
-    const flushBuffer = () => {
-      flushTimer = null
-      if (!buffer) return
-      const content = buffer
-      buffer = ''
-      const state = get()
-      const msgs = [...state.messages]
-      const last = msgs[msgs.length - 1]
-      if (last && last.id === '__thinking__') {
-        msgs[msgs.length - 1] = {
-          id: '__streaming__',
-          session_id: streamSessionId,
-          role: 'assistant',
-          content,
-          file_refs: null,
-          created_at: new Date().toISOString(),
-        }
-      } else if (last && last.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, content: last.content + content }
-      } else {
-        msgs.push({
-          id: '__streaming__',
-          session_id: streamSessionId,
-          role: 'assistant',
-          content,
-          file_refs: null,
-          created_at: new Date().toISOString(),
-        })
-      }
-      set({ messages: msgs })
-    }
-
-    unlistenStream = await listen<ChatTokenEvent>('chat-token', (event) => {
-      if (event.payload.done) {
-        if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
-        flushBuffer()
-        set({ streaming: false })
-        get().switchSession(get().currentSessionId || event.payload.session_id)
-        if (unlistenStream) { unlistenStream(); unlistenStream = null }
-      } else {
-        if (!streamSessionId) streamSessionId = event.payload.session_id
+      const flushBuffer = () => {
+        flushTimer = null
+        if (!buffer) return
+        const content = buffer
+        buffer = ''
         const state = get()
-        const last = state.messages[state.messages.length - 1]
+        const msgs = [...state.messages]
+        const last = msgs[msgs.length - 1]
         if (last && last.id === '__thinking__') {
-          // First token — flush immediately to replace thinking indicator
-          buffer = event.payload.token
-          flushBuffer()
+          msgs[msgs.length - 1] = {
+            id: '__streaming__',
+            session_id: streamSessionId,
+            role: 'assistant',
+            content,
+            file_refs: null,
+            created_at: new Date().toISOString(),
+          }
+        } else if (last && last.role === 'assistant') {
+          msgs[msgs.length - 1] = { ...last, content: last.content + content }
         } else {
-          buffer += event.payload.token
-          if (!flushTimer) {
-            flushTimer = setTimeout(flushBuffer, 80)
+          msgs.push({
+            id: '__streaming__',
+            session_id: streamSessionId,
+            role: 'assistant',
+            content,
+            file_refs: null,
+            created_at: new Date().toISOString(),
+          })
+        }
+        set({ messages: msgs })
+      }
+
+      unlistenStream = await listen<ChatTokenEvent>('chat-token', (event) => {
+        if (event.payload.done) {
+          if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
+          flushBuffer()
+          // Show error message from done token (safety net for silent failures)
+          if (event.payload.token) {
+            set({ streaming: false, error: event.payload.token })
+          } else {
+            set({ streaming: false })
+            get().switchSession(get().currentSessionId || event.payload.session_id)
+          }
+          if (unlistenStream) { unlistenStream(); unlistenStream = null }
+          if (unlistenActions) { unlistenActions(); unlistenActions = null }
+        } else {
+          if (!streamSessionId) streamSessionId = event.payload.session_id
+          const state = get()
+          const last = state.messages[state.messages.length - 1]
+          if (last && last.id === '__thinking__') {
+            // First token — flush immediately to replace thinking indicator
+            buffer = event.payload.token
+            flushBuffer()
+          } else {
+            buffer += event.payload.token
+            if (!flushTimer) {
+              flushTimer = setTimeout(flushBuffer, 80)
+            }
           }
         }
-      }
-    })
+      })
+
+      // Listen for AI-suggested file actions
+      if (unlistenActions) { unlistenActions(); unlistenActions = null }
+      unlistenActions = await listen<ChatActionsEvent>('chat-actions', (event) => {
+        set({ pendingActions: event.payload.actions, actionResults: [] })
+      })
+    } catch (err) {
+      set({ streaming: false, error: `消息发送失败: ${err}` })
+      return
+    }
 
     // Build optimistic file_refs for user message display
     const optimisticFileRefs = attachedFiles && attachedFiles.length > 0
@@ -227,11 +302,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     // Add thinking indicator so user sees immediate feedback during RAG phase
+    const hasFiles = attachedFiles && attachedFiles.length > 0
     const thinkingMsg: ChatMessage = {
       id: '__thinking__',
       session_id: sessionId,
       role: 'assistant',
-      content: '思考中...',
+      content: hasFiles ? '正在分析文件并生成回答...' : '思考中...',
       file_refs: null,
       created_at: now,
     }

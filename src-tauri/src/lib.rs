@@ -13,7 +13,7 @@ use classifier::{CategoryInfo, ClassificationResult, TagInfo};
 use dedup::DuplicateGroup;
 use scanner::FileEntry;
 use store::MetadataStore;
-use chat::{ChatSession, ChatMessage, ChatTokenEvent, ChatIntent};
+use chat::{ChatSession, ChatMessage, ChatTokenEvent, ChatIntent, FileAction, ChatActionsEvent, parse_actions, strip_action_markers};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::sync::RwLock;
@@ -1075,16 +1075,19 @@ async fn chat_send(
     // Build file context string for LLM prompt (from attached files)
     let file_context: Option<String> = user_save_result.as_ref().and_then(|json| {
         serde_json::from_str::<Vec<chat::FileRef>>(json).ok().map(|refs| {
+            let path_list: String = refs.iter().map(|r| {
+                format!("  {}", r.file_path)
+            }).collect::<Vec<_>>().join("\n");
             let ctx: String = refs.iter().map(|r| {
                 format!("- {} (路径: {})\n  内容预览: {}", r.file_name, r.file_path, r.snippet)
             }).collect::<Vec<_>>().join("\n");
             format!(
-                "{}\n\n请分析以上附加文件，你可以给出以下建议：\n\
+                "附加文件路径列表（请原样使用这些路径）：\n{}\n\n{}\n\n请分析以上附加文件，你可以给出以下建议：\n\
                 1. 文件是否重复或过大需要清理（建议去整理建议页面）\n\
                 2. 是否包含隐私信息需要保护（建议使用安全空间加密）\n\
                 3. 文件类型是什么，建议归到哪个分类\n\
                 4. 是否需要重命名、移动或做其他操作",
-                ctx
+                path_list, ctx
             )
         })
     });
@@ -1100,9 +1103,10 @@ async fn chat_send(
         // Detect intent
         let intent = chat::detect_intent(&msg);
 
-        // Build RAG context if search intent
+        // Build RAG context if search intent (skip if files already attached)
+        let has_attached_files = fc.is_some();
         let (rag_context, assistant_file_refs) = match intent {
-            ChatIntent::SearchFiles | ChatIntent::SummarizeFile => {
+            ChatIntent::SearchFiles | ChatIntent::SummarizeFile if !has_attached_files => {
                 let search_engine = state.search_engine.read().map_err(|e| e.to_string())?;
                 let store_lock = state.store.lock().map_err(|e| e.to_string())?;
                 let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
@@ -1165,7 +1169,27 @@ async fn chat_send(
 
     match result {
         Ok((response, assistant_file_refs_json)) => {
-            // Save assistant message with file_refs
+            // Reject empty responses — model generated nothing
+            if response.trim().is_empty() {
+                return Err("模型未生成有效回复，请重试".to_string());
+            }
+
+            // ── AI Actions Engine ──
+            let actions = parse_actions(&response);
+            let clean_text = if actions.is_empty() {
+                response.clone()
+            } else {
+                strip_action_markers(&response)
+            };
+
+            if !actions.is_empty() {
+                let _ = app.emit("chat-actions", ChatActionsEvent {
+                    session_id: session_id.clone(),
+                    actions,
+                });
+            }
+
+            // Save assistant message (with action markers stripped)
             let app_for_save2 = app.clone();
             let sid2 = session_id.clone();
             let refs_json = assistant_file_refs_json.clone();
@@ -1174,7 +1198,7 @@ async fn chat_send(
                 let store_lock = state.store.lock().map_err(|e| e.to_string())?;
                 let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
                 let msg_id = uuid::Uuid::new_v4().to_string();
-                db.insert_chat_message(&msg_id, &sid2, "assistant", &response, refs_json.as_deref())?;
+                db.insert_chat_message(&msg_id, &sid2, "assistant", &clean_text, refs_json.as_deref())?;
                 Ok(())
             }).await.map_err(|e| format!("Task panicked: {}", e))??;
 
@@ -1207,6 +1231,153 @@ async fn chat_send(
                 done: true,
             });
             Err(e)
+        }
+    }
+}
+
+// ── AI Action Execution ──
+
+/// Sanitize file paths from LLM output — the model sometimes hallucinates
+/// leading slashes, URL encoding, or stray whitespace in paths.
+fn sanitize_action_path(path: &str) -> String {
+    let path = path.trim();
+    let path = path.trim_start_matches('/');
+    #[cfg(windows)]
+    let path = path.trim_start_matches('\\');
+    let path = path.replace('\\', "/");
+    // Manually decode percent-encoded sequences (LLM sometimes URL-encodes spaces/Chinese)
+    let mut result = String::with_capacity(path.len());
+    let mut chars = path.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hex: String = chars.by_ref().take(2).collect();
+            if hex.len() == 2 {
+                if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                    result.push(byte as char);
+                    continue;
+                }
+            }
+            result.push('%');
+            result.push_str(&hex);
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// Execute a `FileAction` that was requested by the AI assistant.
+/// Called from the frontend after user confirmation.
+#[tauri::command]
+fn execute_file_action(action_json: String, state: State<AppState>) -> Result<String, String> {
+    let action: FileAction = serde_json::from_str(&action_json)
+        .map_err(|e| format!("无效的操作: {}", e))?;
+
+    match action {
+        FileAction::RenameFile { old_path, new_name } => {
+            let old_path = sanitize_action_path(&old_path);
+            let root = scanner::get_scan_root()?;
+            let full_old = root.join(&old_path);
+            if !full_old.exists() {
+                return Err(format!("文件不存在: {}", old_path));
+            }
+            let full_new = full_old.with_file_name(&new_name);
+            std::fs::rename(&full_old, &full_new)
+                .map_err(|e| format!("重命名失败: {}", e))?;
+            Ok(format!("已重命名「{}」→「{}」", old_path, new_name))
+        }
+        FileAction::DeleteFile { file_path } => {
+            let file_path = sanitize_action_path(&file_path);
+            let root = scanner::get_scan_root()?;
+            let full = root.join(&file_path);
+            if !full.exists() {
+                return Err(format!("文件不存在: {}", file_path));
+            }
+            if full.is_dir() {
+                std::fs::remove_dir_all(&full).map_err(|e| format!("删除失败: {}", e))?;
+            } else {
+                std::fs::remove_file(&full).map_err(|e| format!("删除失败: {}", e))?;
+            }
+            Ok(format!("已删除: {}", file_path))
+        }
+        FileAction::MoveFile { source, destination } => {
+            let source = sanitize_action_path(&source);
+            let destination = sanitize_action_path(&destination);
+            let root = scanner::get_scan_root()?;
+            let src = root.join(&source);
+            let dst = root.join(&destination);
+            if !src.exists() {
+                return Err(format!("文件不存在: {}", source));
+            }
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+            std::fs::rename(&src, &dst)
+                .map_err(|e| format!("移动失败: {}", e))?;
+            Ok(format!("已移动「{}」→「{}」", source, destination))
+        }
+        FileAction::CopyFile { source, destination } => {
+            let source = sanitize_action_path(&source);
+            let destination = sanitize_action_path(&destination);
+            let root = scanner::get_scan_root()?;
+            let src = root.join(&source);
+            let dst = root.join(&destination);
+            if !src.exists() {
+                return Err(format!("文件不存在: {}", source));
+            }
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+            if src.is_dir() {
+                copy_dir_recursive(&src, &dst)?;
+            } else {
+                std::fs::copy(&src, &dst)
+                    .map_err(|e| format!("复制失败: {}", e))?;
+            }
+            Ok(format!("已复制「{}」→「{}」", source, destination))
+        }
+        FileAction::ImportFile { source, destination } => {
+            let destination = sanitize_action_path(&destination);
+            let root = scanner::get_scan_root()?;
+            let src = std::path::PathBuf::from(&source);
+            if !src.exists() {
+                return Err(format!("文件不存在: {}", source));
+            }
+            let dst = root.join(&destination);
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+            std::fs::copy(&src, &dst)
+                .map_err(|e| format!("导入失败: {}", e))?;
+            Ok(format!("已导入「{}」→「{}」", source, destination))
+        }
+        FileAction::VaultAddFile { file_path, password } => {
+            let file_path = sanitize_action_path(&file_path);
+            let vault_dir = vault::get_vault_dir()?;
+            let key = vault::unlock_vault(&vault_dir, &password)
+                .map_err(|e| format!("密码错误: {}", e))?;
+            let root = scanner::get_scan_root()?;
+            let full_path = root.join(&file_path);
+            if !full_path.exists() {
+                return Err(format!("文件不存在: {}", file_path));
+            }
+            vault::encrypt_file(&full_path, &vault_dir, &key)
+                .map_err(|e| format!("加密失败: {}", e))?;
+            Ok(format!("已加密添加到安全空间: {}", file_path))
+        }
+        FileAction::SetFileTags { file_id, tags } => {
+            let store_lock = state.store.lock().map_err(|e| e.to_string())?;
+            let db = store_lock.as_ref()
+                .ok_or_else(|| "数据库未初始化".to_string())?;
+            db.set_file_custom_tags(&file_id, &tags)
+                .map_err(|e| format!("设置标签失败: {}", e))?;
+            for tag in &tags {
+                let _ = db.upsert_user_tag(tag);
+            }
+            Ok(format!("已设置标签: {}", tags.join(", ")))
         }
     }
 }
@@ -1617,6 +1788,7 @@ pub fn run() {
             upsert_user_tag, get_user_tags, get_top_user_tags, set_file_custom_tags, get_file_custom_tags, get_files_custom_tags_batch,
             get_all_tags_with_counts, get_files_by_custom_tag, cleanup_orphan_tags,
             create_chat_session, list_chat_sessions, get_chat_messages, delete_chat_session, rename_chat_session, chat_send, stop_chat,
+            execute_file_action,
             get_directory, rename_file, delete_file, move_file, copy_file, import_file,
             vault_configure, vault_unlock, vault_is_configured,
             vault_add_file, vault_add_external_file, vault_open_file, vault_delete_file,

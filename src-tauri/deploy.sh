@@ -27,6 +27,7 @@ echo "[2/2] 组装分发包..."
 rm -rf "$DIST_DIR"
 mkdir -p "$DIST_DIR"
 mkdir -p "$DIST_DIR/.semanticdrive/models/bge-base-zh"
+mkdir -p "$DIST_DIR/.semanticdrive/models/bge-base-en"
 mkdir -p "$DIST_DIR/.semanticdrive/models/qwen2.5-7b"
 # 保留小模型目录位置，日后需要时直接放文件即可
 mkdir -p "$DIST_DIR/.semanticdrive/models/bge-small-zh"
@@ -69,7 +70,21 @@ copy_model() {
 }
 
 copy_model "bge-base-zh"
-copy_model "qwen2.5-7b"
+copy_model "bge-base-en"
+
+# qwen2.5-7b: 只复制需要的文件，避免重复 GGUF
+QWN_DST="$DIST_DIR/.semanticdrive/models/qwen2.5-7b"
+if [ -d "$MODELS_SRC/qwen2.5-7b" ]; then
+    if [ -f "$MODELS_SRC/qwen2.5-7b/model.gguf" ]; then
+        cp "$MODELS_SRC/qwen2.5-7b/model.gguf" "$QWN_DST/"
+        echo "  ✅ qwen2.5-7b/model.gguf"
+    else
+        echo "  ⚠️  qwen2.5-7b/model.gguf 未找到"
+    fi
+    cp "$MODELS_SRC/qwen2.5-7b/tokenizer.json" "$QWN_DST/" 2>/dev/null || true
+else
+    echo "  ⚠️  qwen2.5-7b 目录不存在，跳过"
+fi
 
 # ── Autorun.inf (Windows AutoPlay 支持) ──
 echo ""

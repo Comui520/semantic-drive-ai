@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useChatStore, type ChatMessage, type ChatSession } from '../store/chatStore'
+import { useChatStore, type ChatMessage, type ChatSession, type FileAction } from '../store/chatStore'
 import { invoke } from '@tauri-apps/api/core'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { useAppStore } from '../store/appStore'
@@ -416,13 +416,90 @@ function ChatInput({ onSend, onStop, streaming }: {
   )
 }
 
+// ── ActionConfirmBar ──
+
+function describeAction(action: FileAction): string {
+  switch (action.cmd) {
+    case 'rename_file': return `重命名「${action.params.old_path}」→「${action.params.new_name}」`
+    case 'delete_file': return `删除「${action.params.file_path}」`
+    case 'move_file': return `移动「${action.params.source}」→「${action.params.destination}」`
+    case 'copy_file': return `复制「${action.params.source}」→「${action.params.destination}」`
+    case 'import_file': return `导入「${action.params.source}」→「${action.params.destination}」`
+    case 'vault_add_file': return `加密添加到安全空间: 「${action.params.file_path}」`
+    case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」到文件`
+  }
+}
+
+function ActionConfirmBar({
+  actions, results, onConfirm, onReject,
+}: {
+  actions: FileAction[]
+  results: string[]
+  onConfirm: () => void
+  onReject: () => void
+}) {
+  if (actions.length === 0 && results.length === 0) return null
+
+  if (results.length > 0) {
+    return (
+      <div className="px-4 pb-2">
+        <div className="glass rounded-xl p-3 border border-accent-teal/20 animate-fade-in">
+          <div className="flex items-center gap-2 text-sm text-accent-teal mb-1">
+            <Check size={14} />
+            <span className="font-medium">操作已执行</span>
+          </div>
+          <div className="space-y-0.5">
+            {results.map((r, i) => (
+              <p key={i} className="text-xs text-silver-400">{r}</p>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="px-4 pb-2">
+      <div className="glass rounded-xl p-3 border border-accent-cyan/20 animate-slide-up">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm">
+            <Bot size={14} className="text-accent-cyan" />
+            <span className="text-silver-200">AI 建议执行以下操作：</span>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={onReject}
+              className="px-2.5 py-1 rounded-lg text-xs text-silver-400 hover:text-white hover:bg-white/10 transition-all"
+            >
+              拒绝
+            </button>
+            <button
+              onClick={onConfirm}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-accent-cyan/20 text-accent-cyan hover:bg-accent-cyan/30 transition-all"
+            >
+              确认执行
+            </button>
+          </div>
+        </div>
+        <div className="mt-2 space-y-0.5">
+          {actions.map((a, i) => (
+            <p key={i} className="text-xs text-silver-400">· {describeAction(a)}</p>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Main SmartAssistant Page ──
 
 export default function SmartAssistant() {
   const {
     sessions, currentSessionId, messages, streaming, loading, error,
+    pendingActions, actionResults,
     loadSessions, createSession, switchSession, deleteSession, renameSession,
     sendMessage, stopGeneration, clearError,
+    confirmActions, rejectActions,
   } = useChatStore()
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -455,6 +532,18 @@ export default function SmartAssistant() {
 
       {/* Main chat area */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Error banner — always visible */}
+        {error && (
+          <div className="px-4 pt-4">
+            <div className="glass rounded-xl p-3 text-sm text-red-400 border border-red-500/20 flex items-center gap-2">
+              <span className="flex-1">{error}</span>
+              <button onClick={clearError} className="p-0.5 hover:text-white shrink-0">
+                <X size={14} />
+              </button>
+            </div>
+          </div>
+        )}
+
         {showWelcome ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-4">
             <div className="w-16 h-16 rounded-full bg-accent-cyan/15 flex items-center justify-center">
@@ -498,16 +587,6 @@ export default function SmartAssistant() {
                 </div>
               )}
 
-              {/* Error banner */}
-              {error && (
-                <div className="glass rounded-xl p-3 text-sm text-red-400 border border-red-500/20 flex items-center gap-2">
-                  <span className="flex-1">{error}</span>
-                  <button onClick={clearError} className="p-0.5 hover:text-white">
-                    <X size={14} />
-                  </button>
-                </div>
-              )}
-
               {messages.map((msg, idx) => (
                 <div key={msg.id} className="animate-slide-up" style={{ animationDelay: `${Math.min(idx, 10) * 60}ms` }}>
                   <ChatMessageBubble msg={msg} />
@@ -515,6 +594,16 @@ export default function SmartAssistant() {
               ))}
               <div ref={messagesEndRef} />
             </div>
+
+            {/* AI action confirmation bar */}
+            {(pendingActions.length > 0 || actionResults.length > 0) && (
+              <ActionConfirmBar
+                actions={pendingActions}
+                results={actionResults}
+                onConfirm={confirmActions}
+                onReject={rejectActions}
+              />
+            )}
 
             {/* Input area */}
             <div className="px-4 py-3 border-t border-subtle">

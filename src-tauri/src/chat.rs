@@ -44,6 +44,32 @@ pub enum FileAction {
         file_id: String,
         tags: Vec<String>,
     },
+
+    // ── File-ID-based actions (preferred — eliminates path hallucination) ──
+    #[serde(rename = "move_file_by_id")]
+    MoveFileById {
+        file_id: String,
+        destination: String,
+    },
+    #[serde(rename = "copy_file_by_id")]
+    CopyFileById {
+        file_id: String,
+        destination: String,
+    },
+    #[serde(rename = "delete_file_by_id")]
+    DeleteFileById {
+        file_id: String,
+    },
+    #[serde(rename = "rename_file_by_id")]
+    RenameFileById {
+        file_id: String,
+        new_name: String,
+    },
+    #[serde(rename = "vault_add_file_by_id")]
+    VaultAddFileById {
+        file_id: String,
+        password: String,
+    },
 }
 
 /// Extract all `[ACTION:{"cmd":"...","params":{...}}]` markers from LLM output text.
@@ -272,9 +298,16 @@ const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家
 `[ACTION:{\"cmd\":\"set_file_tags\",\"params\":{\"file_id\":\"文件ID\",\"tags\":[\"标签1\",\"标签2\"]}}]`
 
 **使用规则：**
-1. 每个 `[ACTION:...]` 只能对应一个操作。需要多个操作时，输出多个标记。
-2. 操作标记应嵌入在回复文本中合适的位置，用户在确认前会看到你的完整回复。
-3. 用户的文件路径都是相对于应用扫描根目录的相对路径（如 `文档/报告.pdf`）。
+1. **优先使用 file_id-based 操作**（推荐，路径更准确）：
+   - 当看到文件列表中的 `ID: xxxxx` 时，在 action 中使用 `file_id` 参数
+   - 例：`[ACTION:{\"cmd\":\"move_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]`
+   - 例：`[ACTION:{\"cmd\":\"rename_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"new_name\":\"新名称.txt\"}}]`
+   - 例：`[ACTION:{\"cmd\":\"delete_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\"}}]`
+   - `copy_file_by_id` 和 `vault_add_file_by_id` 也类似
+2. 只有当没有 file_id 可用时（如用户手动输入路径），才使用旧的路径-based action。
+3. 每个 `[ACTION:...]` 只能对应一个操作。需要多个操作时，输出多个标记。
+4. 操作标记应嵌入在回复文本中合适的位置，用户在确认前会看到你的完整回复。
+5. 用户的文件路径都是相对于应用扫描根目录的相对路径（如 `文档/报告.pdf`）。
 
 **路径格式严格要求（非常重要！）：**
 - 禁止添加前导斜杠 `/`。正确：`文档/报告.pdf`，错误：`/文档/报告.pdf`
@@ -285,11 +318,11 @@ const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家
 - 仔细查看文件上下文中的\"附加文件路径列表\"，原样使用那里的路径
 - 禁止将简体中文转换为繁体中文。如果路径中是\"复杂度\"，就写\"复杂度\"，不要写\"複雜度\"
 
-4. 只有用户明确要求执行操作时，才使用 action 标记。不要自作主张。
-5. 删除/移动等有风险的操作，一定要用户明确表达意图后才使用 action 标记。
-6. 操作执行后会自动显示结果，回复中无需重复说明操作已执行。
-7. 如果操作需要信息（如密码、目标路径），先问清楚再使用 action 标记。
-8. 操作执行后建议告知用户结果，或提出下一步建议。
+6. 只有用户明确要求执行操作时，才使用 action 标记。不要自作主张。
+7. 删除/移动等有风险的操作，一定要用户明确表达意图后才使用 action 标记。
+8. 操作执行后会自动显示结果，回复中无需重复说明操作已执行。
+9. 如果操作需要信息（如密码、目标路径），先问清楚再使用 action 标记。
+10. 操作执行后建议告知用户结果，或提出下一步建议。
 
 ## 助手行为指南
 
@@ -371,8 +404,8 @@ pub fn search_to_rag_context(
     let mut file_refs = Vec::new();
     for (i, r) in results.iter().enumerate() {
         ctx.push_str(&format!(
-            "{}. **{}** (路径: `{}`)\n   类型: {} | 匹配度: {:.0}%",
-            i + 1, r.file_name, r.file_path, r.match_type, r.score * 100.0
+            "{}. **{}** (ID: `{}`, 路径: `{}`)\n   类型: {} | 匹配度: {:.0}%",
+            i + 1, r.file_name, r.file_id, r.file_path, r.match_type, r.score * 100.0
         ));
         if !r.snippet.is_empty() {
             let snippet: String = r.snippet.chars().take(300).collect();

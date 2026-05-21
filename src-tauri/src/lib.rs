@@ -1076,10 +1076,10 @@ async fn chat_send(
     let file_context: Option<String> = user_save_result.as_ref().and_then(|json| {
         serde_json::from_str::<Vec<chat::FileRef>>(json).ok().map(|refs| {
             let path_list: String = refs.iter().map(|r| {
-                format!("  {}", r.file_path)
+                format!("  {} (ID: {})", r.file_path, r.file_id)
             }).collect::<Vec<_>>().join("\n");
             let ctx: String = refs.iter().map(|r| {
-                format!("- {} (路径: {})\n  内容预览: {}", r.file_name, r.file_path, r.snippet)
+                format!("- {} (ID: {}, 路径: {})\n  内容预览: {}", r.file_name, r.file_id, r.file_path, r.snippet)
             }).collect::<Vec<_>>().join("\n");
             format!(
                 "附加文件路径列表（请原样使用这些路径）：\n{}\n\n{}\n\n请分析以上附加文件，你可以给出以下建议：\n\
@@ -1263,6 +1263,19 @@ fn sanitize_action_path(path: &str) -> String {
             result.push(c);
         }
     }
+    // Normalize ".." path segments to prevent path traversal from LLM output.
+    // e.g. ../BJUTJava → BJUTJava,  a/../b → a/b
+    let mut segments: Vec<&str> = Vec::new();
+    for segment in result.split('/') {
+        if segment == ".." {
+            segments.pop();
+        } else if segment == "." || segment.is_empty() {
+            continue;
+        } else {
+            segments.push(segment);
+        }
+    }
+    result = segments.join("/");
     result
 }
 
@@ -1358,6 +1371,18 @@ fn resolve_action_path(
     Err(format!("文件不存在: {}", cleaned))
 }
 
+/// Resolve a file_id to its stored relative path from the database.
+fn get_file_path_by_id(state: &AppState, file_id: &str) -> Result<String, String> {
+    let store_lock = state.store.lock().map_err(|e| e.to_string())?;
+    let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
+    let files = db.get_files_by_ids(&[file_id.to_string()])
+        .map_err(|e| format!("查询文件失败: {}", e))?;
+    files.into_iter()
+        .next()
+        .map(|f| f.path)
+        .ok_or_else(|| format!("文件不存在 (ID: {})", file_id))
+}
+
 /// Execute a `FileAction` that was requested by the AI assistant.
 /// Called from the frontend after user confirmation.
 #[tauri::command]
@@ -1366,6 +1391,8 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
         .map_err(|e| format!("无效的操作: {}", e))?;
 
     match action {
+        // ── Legacy path-based actions (fallback) ──
+
         FileAction::RenameFile { old_path, new_name } => {
             let root = scanner::get_scan_root()?;
             let (full_old, old_path) = resolve_action_path(&old_path, &root, &state)?;
@@ -1450,6 +1477,87 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
                 let _ = db.upsert_user_tag(tag);
             }
             Ok(format!("已设置标签: {}", tags.join(", ")))
+        }
+
+        // ── File-ID-based actions (preferred — no path hallucination) ──
+
+        FileAction::MoveFileById { file_id, destination } => {
+            let source = get_file_path_by_id(&state, &file_id)?;
+            let destination = sanitize_action_path(&destination);
+            let root = scanner::get_scan_root()?;
+            let src = root.join(&source);
+            let dst = root.join(&destination);
+            if !src.exists() {
+                return Err(format!("文件不存在: {}", source));
+            }
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+            std::fs::rename(&src, &dst)
+                .map_err(|e| format!("移动失败: {}", e))?;
+            Ok(format!("已移动「{}」→「{}」", source, destination))
+        }
+        FileAction::CopyFileById { file_id, destination } => {
+            let source = get_file_path_by_id(&state, &file_id)?;
+            let destination = sanitize_action_path(&destination);
+            let root = scanner::get_scan_root()?;
+            let src = root.join(&source);
+            let dst = root.join(&destination);
+            if !src.exists() {
+                return Err(format!("文件不存在: {}", source));
+            }
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+            if src.is_dir() {
+                copy_dir_recursive(&src, &dst)?;
+            } else {
+                std::fs::copy(&src, &dst)
+                    .map_err(|e| format!("复制失败: {}", e))?;
+            }
+            Ok(format!("已复制「{}」→「{}」", source, destination))
+        }
+        FileAction::DeleteFileById { file_id } => {
+            let file_path = get_file_path_by_id(&state, &file_id)?;
+            let root = scanner::get_scan_root()?;
+            let full = root.join(&file_path);
+            if !full.exists() {
+                return Err(format!("文件不存在: {}", file_path));
+            }
+            if full.is_dir() {
+                std::fs::remove_dir_all(&full).map_err(|e| format!("删除失败: {}", e))?;
+            } else {
+                std::fs::remove_file(&full).map_err(|e| format!("删除失败: {}", e))?;
+            }
+            Ok(format!("已删除: {}", file_path))
+        }
+        FileAction::RenameFileById { file_id, new_name } => {
+            let old_path = get_file_path_by_id(&state, &file_id)?;
+            let root = scanner::get_scan_root()?;
+            let full_old = root.join(&old_path);
+            if !full_old.exists() {
+                return Err(format!("文件不存在: {}", old_path));
+            }
+            let full_new = full_old.with_file_name(&new_name);
+            std::fs::rename(&full_old, &full_new)
+                .map_err(|e| format!("重命名失败: {}", e))?;
+            Ok(format!("已重命名「{}」→「{}」", old_path, new_name))
+        }
+        FileAction::VaultAddFileById { file_id, password } => {
+            let file_path = get_file_path_by_id(&state, &file_id)?;
+            let vault_dir = vault::get_vault_dir()?;
+            let key = vault::unlock_vault(&vault_dir, &password)
+                .map_err(|e| format!("密码错误: {}", e))?;
+            let root = scanner::get_scan_root()?;
+            let full_path = root.join(&file_path);
+            if !full_path.exists() {
+                return Err(format!("文件不存在: {}", file_path));
+            }
+            vault::encrypt_file(&full_path, &vault_dir, &key)
+                .map_err(|e| format!("加密失败: {}", e))?;
+            Ok(format!("已加密添加到安全空间: {}", file_path))
         }
     }
 }

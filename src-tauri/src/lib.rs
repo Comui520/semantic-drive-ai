@@ -1266,6 +1266,98 @@ fn sanitize_action_path(path: &str) -> String {
     result
 }
 
+/// Try to resolve a path from LLM output to an actual file on disk.
+/// 1. Sanitize + join with root
+/// 2. If the file doesn't exist, query DB for files in the same directory
+///    and find the closest match by character overlap (handles trad→simpl, etc.)
+/// Returns (full PathBuf, the resolved relative path string).
+fn resolve_action_path(
+    llm_path: &str,
+    root: &std::path::Path,
+    state: &AppState,
+) -> Result<(std::path::PathBuf, String), String> {
+    let cleaned = sanitize_action_path(llm_path);
+    let full = root.join(&cleaned);
+
+    // 1. Exact match
+    if full.exists() {
+        return Ok((full, cleaned));
+    }
+
+    // 2. Fuzzy match against DB files in same directory
+    let llm_filename = cleaned.rsplit('/').next().unwrap_or(&cleaned);
+
+    // Determine parent directory — handle paths without a slash (top-level files)
+    let parent_dir = if cleaned.contains('/') {
+        let idx = cleaned.rfind('/').unwrap();
+        &cleaned[..idx]
+    } else {
+        ""
+    };
+
+    let store_lock = state.store.lock().map_err(|e| e.to_string())?;
+    let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
+
+    // Get all files whose parent directory matches
+    let all_files = db.get_all_files().map_err(|e| e.to_string())?;
+    let candidates: Vec<&FileEntry> = all_files.iter()
+        .filter(|f| {
+            if parent_dir.is_empty() {
+                !f.path.contains('/')
+            } else {
+                f.path.starts_with(parent_dir)
+                    && f.path[parent_dir.len()..].starts_with('/')
+            }
+        })
+        .collect();
+
+    if !candidates.is_empty() {
+        // Score each candidate by how many characters from the LLM filename
+        // appear in the candidate filename in order (character-by-character match).
+        let mut best_score: isize = -1;
+        let mut best_path: Option<&str> = None;
+
+        for candidate in &candidates {
+            let cand_filename = candidate.path.rsplit('/').next().unwrap_or(&candidate.path);
+
+            // Count matching characters in sequence (longest common subsequence style)
+            let score = cand_filename.chars()
+                .filter(|&c| llm_filename.contains(c))
+                .count() as isize;
+
+            // Penalize if the candidate filename is much longer than the LLM version
+            let len_diff = (cand_filename.len() as isize - llm_filename.len() as isize).abs();
+            let score = score - len_diff;
+
+            if score > best_score {
+                best_score = score;
+                best_path = Some(&candidate.path);
+            }
+        }
+
+        if best_score > 0 {
+            if let Some(best) = best_path {
+                let full = root.join(best);
+                if full.exists() {
+                    return Ok((full, best.to_string()));
+                }
+            }
+        }
+    }
+
+    // 3. Broader search: match by any path segment
+    for file in &all_files {
+        if file.path.contains(llm_filename.trim()) {
+            let full = root.join(&file.path);
+            if full.exists() {
+                return Ok((full, file.path.clone()));
+            }
+        }
+    }
+
+    Err(format!("文件不存在: {}", cleaned))
+}
+
 /// Execute a `FileAction` that was requested by the AI assistant.
 /// Called from the frontend after user confirmation.
 #[tauri::command]
@@ -1275,24 +1367,16 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
 
     match action {
         FileAction::RenameFile { old_path, new_name } => {
-            let old_path = sanitize_action_path(&old_path);
             let root = scanner::get_scan_root()?;
-            let full_old = root.join(&old_path);
-            if !full_old.exists() {
-                return Err(format!("文件不存在: {}", old_path));
-            }
+            let (full_old, old_path) = resolve_action_path(&old_path, &root, &state)?;
             let full_new = full_old.with_file_name(&new_name);
             std::fs::rename(&full_old, &full_new)
                 .map_err(|e| format!("重命名失败: {}", e))?;
             Ok(format!("已重命名「{}」→「{}」", old_path, new_name))
         }
         FileAction::DeleteFile { file_path } => {
-            let file_path = sanitize_action_path(&file_path);
             let root = scanner::get_scan_root()?;
-            let full = root.join(&file_path);
-            if !full.exists() {
-                return Err(format!("文件不存在: {}", file_path));
-            }
+            let (full, file_path) = resolve_action_path(&file_path, &root, &state)?;
             if full.is_dir() {
                 std::fs::remove_dir_all(&full).map_err(|e| format!("删除失败: {}", e))?;
             } else {
@@ -1301,14 +1385,10 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             Ok(format!("已删除: {}", file_path))
         }
         FileAction::MoveFile { source, destination } => {
-            let source = sanitize_action_path(&source);
             let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
-            let src = root.join(&source);
+            let (src, source) = resolve_action_path(&source, &root, &state)?;
             let dst = root.join(&destination);
-            if !src.exists() {
-                return Err(format!("文件不存在: {}", source));
-            }
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("创建目录失败: {}", e))?;
@@ -1318,14 +1398,10 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             Ok(format!("已移动「{}」→「{}」", source, destination))
         }
         FileAction::CopyFile { source, destination } => {
-            let source = sanitize_action_path(&source);
             let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
-            let src = root.join(&source);
+            let (src, source) = resolve_action_path(&source, &root, &state)?;
             let dst = root.join(&destination);
-            if !src.exists() {
-                return Err(format!("文件不存在: {}", source));
-            }
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("创建目录失败: {}", e))?;
@@ -1355,15 +1431,11 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             Ok(format!("已导入「{}」→「{}」", source, destination))
         }
         FileAction::VaultAddFile { file_path, password } => {
-            let file_path = sanitize_action_path(&file_path);
             let vault_dir = vault::get_vault_dir()?;
             let key = vault::unlock_vault(&vault_dir, &password)
                 .map_err(|e| format!("密码错误: {}", e))?;
             let root = scanner::get_scan_root()?;
-            let full_path = root.join(&file_path);
-            if !full_path.exists() {
-                return Err(format!("文件不存在: {}", file_path));
-            }
+            let (full_path, file_path) = resolve_action_path(&file_path, &root, &state)?;
             vault::encrypt_file(&full_path, &vault_dir, &key)
                 .map_err(|e| format!("加密失败: {}", e))?;
             Ok(format!("已加密添加到安全空间: {}", file_path))

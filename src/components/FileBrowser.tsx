@@ -28,6 +28,7 @@ interface FileBrowserProps {
   onCut: (path: string) => void
   onPaste: () => void
   onRefresh: () => void
+  onCreateDirectory?: () => void
   // Optional tag editing in browse mode — keyed by DirEntry.path
   browseFileTags?: Record<string, string[]>
   onBrowseAddTag?: (filePath: string, tag: string) => void
@@ -62,7 +63,7 @@ function getBreadcrumbs(path: string): string[] {
 export default function FileBrowser({
   entries, currentPath, clipboard, onNavigate, onNavigateUp,
   onOpenFile, onOpenLocation, onRename, onDelete,
-  onCopy, onCut, onPaste, onRefresh,
+  onCopy, onCut, onPaste, onRefresh, onCreateDirectory,
   browseFileTags, onBrowseAddTag, onBrowseRemoveTag,
 }: FileBrowserProps) {
   const breadcrumbs = getBreadcrumbs(currentPath)
@@ -105,6 +106,13 @@ export default function FileBrowser({
             粘贴 {clipboard.paths.length} 项
           </button>
         )}
+        <button
+          onClick={onCreateDirectory}
+          className="p-1.5 rounded-lg text-silver-400 hover:text-accent-teal hover:bg-white/10 transition-all"
+          title="新建文件夹"
+        >
+          <Plus size={14} />
+        </button>
         <button
           onClick={onRefresh}
           className="p-1.5 rounded-lg text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"

@@ -419,6 +419,18 @@ impl MetadataStore {
         Ok(())
     }
 
+    /// Update the path and name of a file entry by its id.
+    /// Used after moving or renaming a file on disk.
+    pub fn update_file_path(&self, id: &str, new_path: &str, new_name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute(
+            "UPDATE files SET path = ?1, name = ?2 WHERE id = ?3",
+            params![new_path, new_name, id],
+        )
+        .map_err(|e| format!("Update file path error: {}", e))?;
+        Ok(())
+    }
+
     /// Get files filtered by category (pre-classified).
     pub fn get_files_by_category(&self, category: &str) -> Result<Vec<FileEntry>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;

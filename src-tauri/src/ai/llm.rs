@@ -240,8 +240,8 @@ impl LlmEngine {
             past_tokens.push(next);
             token_buffer.push(next);
 
-            // Batch-decode every 4 tokens for smoother UTF-8 output
-            if token_buffer.len() >= 4 {
+            // Batch-decode every 12 tokens for smoother UTF-8 output
+            if token_buffer.len() >= 12 {
                 if let Ok(text) = tokenizer.decode(&token_buffer, true) {
                     on_token(text);
                 }

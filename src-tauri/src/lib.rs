@@ -145,24 +145,21 @@ async fn scan_files(app: tauri::AppHandle) -> Result<Vec<FileEntry>, String> {
         current_file: "indexing content...".into(), done: false,
     });
 
-    // Phase 5a (parallel with Phase 3): Background classification
-    if !entries.is_empty() {
+    // Phase 5a (parallel with Phase 3): Incremental classification
+    // Only classify new/changed files — existing files already have categories in DB.
+    if !need_indexing.is_empty() {
         let app_5a = app.clone();
-        let entries_5a = entries.clone();
+        let entries_5a = need_indexing.clone();
         tokio::spawn(async move {
             let _ = app_5a.emit("classify-progress", serde_json::json!({
                 "status": "classifying", "current": 0, "total": 0
             }));
             let app_bg = app_5a.clone();
-            match tokio::task::spawn_blocking(move || -> Result<ClassificationResult, String> {
+            match tokio::task::spawn_blocking(move || -> Result<(), String> {
                 let state = app_bg.state::<AppState>();
-                let all_files = match state.store.lock().map_err(|e| e.to_string())?.as_ref() {
-                    Some(db) => db.get_all_files().map_err(|e| e.to_string())?,
-                    None => entries_5a,
-                };
-                let (result, cat_map, tag_map) = {
+                let (_, cat_map, tag_map) = {
                     let engine = state.search_engine.read().map_err(|e| e.to_string())?;
-                    classifier::classify_files_batch(&all_files, engine.embedding_engine())
+                    classifier::classify_files_batch(&entries_5a, engine.embedding_engine())
                 };
                 let _ = app_bg.emit("classify-progress", serde_json::json!({
                     "status": "saving", "current": 0, "total": 0
@@ -173,15 +170,16 @@ async fn scan_files(app: tauri::AppHandle) -> Result<Vec<FileEntry>, String> {
                         for (id, tags) in &tag_map { if !tags.is_empty() { let _ = db.update_tags(id, tags); } }
                     }
                 }
-                Ok(result)
+                Ok(())
             }).await {
-                Ok(Ok(result)) => {
+                Ok(Ok(_)) => {
+                    // Clear cache so classify_files command rebuilds aggregates from DB
+                    if let Ok(mut cache) = app_5a.state::<AppState>().classification_cache.lock() {
+                        *cache = None;
+                    }
                     let _ = app_5a.emit("classify-progress", serde_json::json!({
                         "status": "done", "current": 1, "total": 1
                     }));
-                    if let Ok(mut cache) = app_5a.state::<AppState>().classification_cache.lock() {
-                        *cache = Some(result);
-                    }
                 }
                 Ok(Err(e)) => {
                     log::error!("Background classification failed: {}", e);
@@ -703,6 +701,13 @@ fn import_file(source: String, destination: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn create_directory(dir_path: String) -> Result<(), String> {
+    let root = scanner::get_scan_root()?;
+    let full = root.join(&dir_path);
+    std::fs::create_dir_all(&full).map_err(|e| format!("Create directory failed: {}", e))
+}
+
+#[tauri::command]
 fn index_file_content(file_id: String, content: String, state: State<AppState>) -> Result<(), String> {
     let mut engine = state.search_engine.write().map_err(|e| e.to_string())?;
     engine.index_file(&file_id, &content);
@@ -1039,6 +1044,7 @@ async fn chat_send(
     session_id: String,
     message: String,
     file_ids: Option<Vec<String>>,
+    folder_paths: Option<Vec<String>>,
 ) -> Result<(), String> {
     // ── Save user message + compute file refs (if any) ──
     let app_for_save = app.clone();
@@ -1092,11 +1098,29 @@ async fn chat_send(
         })
     });
 
+    // ── Build folder context (structured, not emoji-dependent) ──
+    let folder_context: Option<String> = folder_paths.as_ref().and_then(|paths| {
+        if paths.is_empty() { return None; }
+        Some(format!(
+            "附加文件夹路径（用户指定的操作目标位置）：\n{}\n\n\
+             **重要：当用户要求将文件放入上述文件夹时，直接将文件夹路径作为 destination 使用，不要添加额外子目录层级。**",
+            paths.iter().map(|p| format!("  📁 {}", p)).collect::<Vec<_>>().join("\n")
+        ))
+    });
+
+    // Merge file context and folder context
+    let combined_context: Option<String> = match (file_context.as_ref(), folder_context) {
+        (Some(fc), Some(foc)) => Some(format!("{}\n\n{}", fc, foc)),
+        (Some(fc), None) => Some(fc.clone()),
+        (None, Some(foc)) => Some(foc),
+        (None, None) => None,
+    };
+
     // ── Generate assistant response ──
     let app_for_gen = app.clone();
     let sid = session_id.clone();
     let msg = message.clone();
-    let fc = file_context.clone();
+    let fc = combined_context.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>), String> {
         let state = app_for_gen.state::<AppState>();
 
@@ -1193,12 +1217,13 @@ async fn chat_send(
             let app_for_save2 = app.clone();
             let sid2 = session_id.clone();
             let refs_json = assistant_file_refs_json.clone();
+            let value = clean_text.clone();
             tokio::task::spawn_blocking(move || -> Result<(), String> {
                 let state = app_for_save2.state::<AppState>();
                 let store_lock = state.store.lock().map_err(|e| e.to_string())?;
                 let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
                 let msg_id = uuid::Uuid::new_v4().to_string();
-                db.insert_chat_message(&msg_id, &sid2, "assistant", &clean_text, refs_json.as_deref())?;
+                db.insert_chat_message(&msg_id, &sid2, "assistant", &value, refs_json.as_deref())?;
                 Ok(())
             }).await.map_err(|e| format!("Task panicked: {}", e))??;
 
@@ -1245,6 +1270,7 @@ fn sanitize_action_path(path: &str) -> String {
     #[cfg(windows)]
     let path = path.trim_start_matches('\\');
     let path = path.replace('\\', "/");
+    let path = path.replace("//", "/");
     // Manually decode percent-encoded sequences (LLM sometimes URL-encodes spaces/Chinese)
     let mut result = String::with_capacity(path.len());
     let mut chars = path.chars();
@@ -1265,6 +1291,8 @@ fn sanitize_action_path(path: &str) -> String {
     }
     // Normalize ".." path segments to prevent path traversal from LLM output.
     // e.g. ../BJUTJava → BJUTJava,  a/../b → a/b
+    // Preserve trailing slash to distinguish directory paths.
+    let ends_with_slash = result.ends_with('/');
     let mut segments: Vec<&str> = Vec::new();
     for segment in result.split('/') {
         if segment == ".." {
@@ -1276,6 +1304,9 @@ fn sanitize_action_path(path: &str) -> String {
         }
     }
     result = segments.join("/");
+    if ends_with_slash {
+        result.push('/');
+    }
     result
 }
 
@@ -1383,6 +1414,19 @@ fn get_file_path_by_id(state: &AppState, file_id: &str) -> Result<String, String
         .ok_or_else(|| format!("文件不存在 (ID: {})", file_id))
 }
 
+/// If destination is a directory (ends with `/`, already exists as a dir on disk,
+/// or has no file extension), append the source filename to make a complete target path.
+fn resolve_destination(dest: &str, src: &std::path::Path, root: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let dst = root.join(dest);
+    if dest.ends_with('/') || dst.is_dir() || !dest.split('/').last().map_or(false, |s| s.contains('.')) {
+        let name = src.file_name()
+            .ok_or_else(|| "无法获取源文件名".to_string())?;
+        Ok(dst.join(name))
+    } else {
+        Ok(dst)
+    }
+}
+
 /// Execute a `FileAction` that was requested by the AI assistant.
 /// Called from the frontend after user confirmation.
 #[tauri::command]
@@ -1415,20 +1459,21 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
             let (src, source) = resolve_action_path(&source, &root, &state)?;
-            let dst = root.join(&destination);
+            let dst = resolve_destination(&destination, &src, &root)?;
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("创建目录失败: {}", e))?;
             }
             std::fs::rename(&src, &dst)
                 .map_err(|e| format!("移动失败: {}", e))?;
-            Ok(format!("已移动「{}」→「{}」", source, destination))
+            let display = dst.strip_prefix(&root).unwrap_or(&dst).to_string_lossy();
+            Ok(format!("已移动「{}」→「{}」", source, display))
         }
         FileAction::CopyFile { source, destination } => {
             let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
             let (src, source) = resolve_action_path(&source, &root, &state)?;
-            let dst = root.join(&destination);
+            let dst = resolve_destination(&destination, &src, &root)?;
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| format!("创建目录失败: {}", e))?;
@@ -1439,7 +1484,8 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
                 std::fs::copy(&src, &dst)
                     .map_err(|e| format!("复制失败: {}", e))?;
             }
-            Ok(format!("已复制「{}」→「{}」", source, destination))
+            let display = dst.strip_prefix(&root).unwrap_or(&dst).to_string_lossy();
+            Ok(format!("已复制「{}」→「{}」", source, display))
         }
         FileAction::ImportFile { source, destination } => {
             let destination = sanitize_action_path(&destination);
@@ -1486,9 +1532,13 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
             let src = root.join(&source);
-            let dst = root.join(&destination);
+            let dst = resolve_destination(&destination, &src, &root)?;
             if !src.exists() {
                 return Err(format!("文件不存在: {}", source));
+            }
+            if src == dst {
+                let display = dst.strip_prefix(&root).unwrap_or(&dst).to_string_lossy().to_string();
+                return Ok(format!("文件已在目标位置: {}", display));
             }
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
@@ -1496,16 +1546,29 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             }
             std::fs::rename(&src, &dst)
                 .map_err(|e| format!("移动失败: {}", e))?;
-            Ok(format!("已移动「{}」→「{}」", source, destination))
+            let display = dst.strip_prefix(&root).unwrap_or(&dst).to_string_lossy().to_string();
+            // Update DB so the file remains findable at its new location
+            if let Some(name) = dst.file_name() {
+                if let Ok(store_lock) = state.store.lock() {
+                    if let Some(db) = store_lock.as_ref() {
+                        let _ = db.update_file_path(&file_id, &display, &name.to_string_lossy());
+                    }
+                }
+            }
+            Ok(format!("已移动「{}」→「{}」", source, display))
         }
         FileAction::CopyFileById { file_id, destination } => {
             let source = get_file_path_by_id(&state, &file_id)?;
             let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
             let src = root.join(&source);
-            let dst = root.join(&destination);
+            let dst = resolve_destination(&destination, &src, &root)?;
             if !src.exists() {
                 return Err(format!("文件不存在: {}", source));
+            }
+            if src == dst {
+                let display = dst.strip_prefix(&root).unwrap_or(&dst).to_string_lossy().to_string();
+                return Ok(format!("文件已在目标位置: {}", display));
             }
             if let Some(parent) = dst.parent() {
                 std::fs::create_dir_all(parent)
@@ -1517,7 +1580,8 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
                 std::fs::copy(&src, &dst)
                     .map_err(|e| format!("复制失败: {}", e))?;
             }
-            Ok(format!("已复制「{}」→「{}」", source, destination))
+            let display = dst.strip_prefix(&root).unwrap_or(&dst).to_string_lossy();
+            Ok(format!("已复制「{}」→「{}」", source, display))
         }
         FileAction::DeleteFileById { file_id } => {
             let file_path = get_file_path_by_id(&state, &file_id)?;
@@ -1531,6 +1595,12 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             } else {
                 std::fs::remove_file(&full).map_err(|e| format!("删除失败: {}", e))?;
             }
+            // Remove from DB so it no longer appears in search
+            if let Ok(store_lock) = state.store.lock() {
+                if let Some(db) = store_lock.as_ref() {
+                    let _ = db.remove_file(&file_id);
+                }
+            }
             Ok(format!("已删除: {}", file_path))
         }
         FileAction::RenameFileById { file_id, new_name } => {
@@ -1543,6 +1613,13 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             let full_new = full_old.with_file_name(&new_name);
             std::fs::rename(&full_old, &full_new)
                 .map_err(|e| format!("重命名失败: {}", e))?;
+            // Update DB so the file remains findable at its new name
+            if let Ok(store_lock) = state.store.lock() {
+                if let Some(db) = store_lock.as_ref() {
+                    let new_path = full_new.strip_prefix(&root).unwrap_or(&full_new).to_string_lossy().to_string();
+                    let _ = db.update_file_path(&file_id, &new_path, &new_name);
+                }
+            }
             Ok(format!("已重命名「{}」→「{}」", old_path, new_name))
         }
         FileAction::VaultAddFileById { file_id, password } => {
@@ -1969,7 +2046,7 @@ pub fn run() {
             get_all_tags_with_counts, get_files_by_custom_tag, cleanup_orphan_tags,
             create_chat_session, list_chat_sessions, get_chat_messages, delete_chat_session, rename_chat_session, chat_send, stop_chat,
             execute_file_action,
-            get_directory, rename_file, delete_file, move_file, copy_file, import_file,
+            get_directory, rename_file, delete_file, move_file, copy_file, import_file, create_directory,
             vault_configure, vault_unlock, vault_is_configured,
             vault_add_file, vault_add_external_file, vault_open_file, vault_delete_file,
             vault_list_files, vault_remove_file,

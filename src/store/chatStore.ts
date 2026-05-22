@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 
+
 export interface FileRef {
   file_id: string
   file_name: string
@@ -42,6 +43,12 @@ export type FileAction =
   | { cmd: 'import_file'; params: { source: string; destination: string } }
   | { cmd: 'vault_add_file'; params: { file_path: string; password: string } }
   | { cmd: 'set_file_tags'; params: { file_id: string; tags: string[] } }
+  // ── ByFileId variants ──
+  | { cmd: 'move_file_by_id'; params: { file_id: string; destination: string } }
+  | { cmd: 'copy_file_by_id'; params: { file_id: string; destination: string } }
+  | { cmd: 'delete_file_by_id'; params: { file_id: string } }
+  | { cmd: 'rename_file_by_id'; params: { file_id: string; new_name: string } }
+  | { cmd: 'vault_add_file_by_id'; params: { file_id: string; password: string } }
 
 export interface ChatActionsEvent {
   session_id: string
@@ -57,6 +64,11 @@ function describeAction(action: FileAction): string {
     case 'import_file': return `导入「${action.params.source}」→「${action.params.destination}」`
     case 'vault_add_file': return `加密添加到安全空间: 「${action.params.file_path}」`
     case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」到文件`
+    case 'move_file_by_id': return `移动文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
+    case 'copy_file_by_id': return `复制文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
+    case 'delete_file_by_id': return `删除文件（ID: ${action.params.file_id}）`
+    case 'rename_file_by_id': return `重命名文件（ID: ${action.params.file_id}）→「${action.params.new_name}」`
+    case 'vault_add_file_by_id': return `加密添加到安全空间（ID: ${action.params.file_id}）`
   }
 }
 
@@ -75,7 +87,7 @@ interface ChatState {
   switchSession: (id: string) => Promise<void>
   deleteSession: (id: string) => Promise<void>
   renameSession: (id: string, title: string) => Promise<void>
-  sendMessage: (content: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[]) => Promise<void>
+  sendMessage: (content: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[], folderPaths?: string[]) => Promise<void>
   stopGeneration: () => Promise<void>
   clearError: () => void
   confirmActions: () => Promise<void>
@@ -188,7 +200,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[]) => {
+  sendMessage: async (content: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[], folderPaths?: string[]) => {
     const { currentSessionId } = get()
     let sessionId = currentSessionId
 
@@ -249,8 +261,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         if (event.payload.done) {
           if (flushTimer) { clearTimeout(flushTimer); flushTimer = null }
           flushBuffer()
-          // Show error message from done token (safety net for silent failures)
-          if (event.payload.token) {
+          if (event.payload.token && event.payload.token.startsWith('生成失败:')) {
             set({ streaming: false, error: event.payload.token })
           } else {
             set({ streaming: false })
@@ -316,11 +327,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       const fileIds = attachedFiles && attachedFiles.length > 0
-        ? attachedFiles.map(f => f.file_id)
+        ? attachedFiles.filter(f => !f.file_id.startsWith('__folder__') && !f.file_id.includes('/')).map(f => f.file_id)
         : undefined
       const invokeArgs: Record<string, unknown> = { sessionId, message: content }
       if (fileIds && fileIds.length > 0) {
         invokeArgs.fileIds = fileIds
+      }
+      if (folderPaths && folderPaths.length > 0) {
+        invokeArgs.folderPaths = folderPaths
       }
       await invoke('chat_send', invokeArgs)
       // Reload sessions to update timestamp

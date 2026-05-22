@@ -302,6 +302,19 @@ export default function SmartSearch() {
     loadDirectory(currentPath)
   }, [currentPath, loadDirectory])
 
+  const handleCreateDirectory = useCallback(async () => {
+    const name = prompt('请输入文件夹名称')
+    if (!name || !name.trim()) return
+    const newPath = currentPath ? `${currentPath}/${name.trim()}` : name.trim()
+    try {
+      await invoke('create_directory', { dirPath: newPath })
+      showFeedback(`已创建文件夹: ${name.trim()}`)
+      loadDirectory(currentPath)
+    } catch (err) {
+      showFeedback(`创建文件夹失败: ${err}`, 'error')
+    }
+  }, [currentPath, loadDirectory])
+
   const handleImport = async () => {
     try {
       const selected = await open({ multiple: false, title: '从电脑选择文件导入到U盘' })
@@ -1098,6 +1111,7 @@ export default function SmartSearch() {
                 onCut={handleCut}
                 onPaste={handlePaste}
                 onRefresh={handleRefresh}
+                onCreateDirectory={handleCreateDirectory}
                 browseFileTags={browseFileTags}
                 onBrowseAddTag={handleBrowseAddTag}
                 onBrowseRemoveTag={handleBrowseRemoveTag}

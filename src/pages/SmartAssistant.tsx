@@ -1,11 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useChatStore, type ChatMessage, type ChatSession, type FileAction } from '../store/chatStore'
 import { invoke } from '@tauri-apps/api/core'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { useAppStore } from '../store/appStore'
 import {
   MessageSquare, Plus, Trash2, Edit2, Check, X, Send, Bot, User, Loader2,
-  FolderOpen, ExternalLink, Paperclip, Search,
+  FolderOpen, ExternalLink, Paperclip, Search, AlertTriangle,
 } from 'lucide-react'
 
 // ── Helpers ──
@@ -31,6 +31,48 @@ const EXT_ICONS: Record<string, string> = {
 function getFileIcon(name: string): string {
   const ext = name.split('.').pop()?.toLowerCase() || ''
   return EXT_ICONS[ext] || '📁'
+}
+
+// ── Tree data structures ──
+
+interface TreeNode {
+  name: string
+  path: string
+  is_dir: boolean
+  children: TreeNode[]
+}
+
+function buildFileTree(files: FileEntry[]): TreeNode[] {
+  const roots: TreeNode[] = []
+  const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path))
+  for (const file of sorted) {
+    const parts = file.path.split('/')
+    let current = roots
+    for (let i = 0; i < parts.length; i++) {
+      const segPath = parts.slice(0, i + 1).join('/')
+      const existing = current.find(n => n.path === segPath)
+      if (existing) {
+        current = existing.children
+      } else {
+        current.push({ name: parts[i], path: segPath, is_dir: i < parts.length - 1, children: [] })
+        current = current[current.length - 1].children
+      }
+    }
+  }
+  const sortNodes = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    nodes.forEach(n => sortNodes(n.children))
+  }
+  sortNodes(roots)
+  return roots
+}
+
+function collectFilePaths(node: TreeNode): string[] {
+  if (!node.is_dir) return [node.path]
+  return node.children.flatMap(collectFilePaths)
 }
 
 // ── ChatSidebar ──
@@ -116,12 +158,62 @@ function ChatSidebar({
   )
 }
 
+// ── UserMessageContent — renders [文件夹] lines as badges ──
+
+function UserMessageContent({ content }: { content: string }) {
+  const lines = content.split('\n')
+  const folderBadges: string[] = []
+  const textLines: string[] = []
+  for (const line of lines) {
+    if (line.startsWith('📁 ')) {
+      folderBadges.push(line.slice('📁 '.length))
+    } else {
+      textLines.push(line)
+    }
+  }
+  const text = textLines.join('\n')
+  if (folderBadges.length === 0) return <>{text || content}</>
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5 mb-2">
+        {folderBadges.map(p => (
+          <span
+            key={p}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/15 text-[11px] text-amber-400 border border-amber-500/20"
+          >
+            <span>📁</span>
+            {p.split('/').pop()}
+          </span>
+        ))}
+      </div>
+      {text || '(文件夹附件)'}
+    </div>
+  )
+}
+
 // ── ChatMessageBubble ──
 
 function ChatMessageBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === 'user'
   const isStreaming = msg.id === '__streaming__'
   const isThinking = msg.id === '__thinking__'
+
+  // Extract 📁 folder paths from message content (folders are embedded as text)
+  // and render them as cards below the bubble, persisting through DB reloads.
+  const { folderPaths, textContent } = useMemo(() => {
+    if (msg.role !== 'user') return { folderPaths: [], textContent: msg.content }
+    const lines = msg.content.split('\n')
+    const folders: string[] = []
+    const textLines: string[] = []
+    for (const line of lines) {
+      if (line.startsWith('📁 ')) {
+        folders.push(line.slice('📁 '.length))
+      } else {
+        textLines.push(line)
+      }
+    }
+    return { folderPaths: folders, textContent: textLines.join('\n').trim() || '(文件夹附件)' }
+  }, [msg.content, msg.role])
 
   const handleOpenLocation = useCallback((filePath: string) => {
     invoke('open_file_location', { filePath }).catch(console.error)
@@ -157,7 +249,7 @@ function ChatMessageBubble({ msg }: { msg: ChatMessage }) {
           ) : (
             <>
               {isUser ? (
-                <>{msg.content}</>
+                <UserMessageContent content={textContent} />
               ) : (
                 <MarkdownRenderer content={msg.content} />
               )}
@@ -165,6 +257,7 @@ function ChatMessageBubble({ msg }: { msg: ChatMessage }) {
             </>
           )}
         </div>
+        {/* File refs cards (below message) */}
         {msg.file_refs && msg.file_refs.length > 0 && (
           <div className="mt-2 space-y-1.5 border-t border-white/10 pt-2">
             {msg.file_refs.map((ref) => (
@@ -206,15 +299,39 @@ function ChatMessageBubble({ msg }: { msg: ChatMessage }) {
             ))}
           </div>
         )}
+        {/* Folder cards (parsed from 📁 text in content, persists across DB reloads) */}
+        {folderPaths.length > 0 && (
+          <div className="mt-2 space-y-1.5 border-t border-white/10 pt-2">
+            {folderPaths.map((fp) => {
+              const folderName = fp.split('/').pop() || fp
+              return (
+                <div key={fp} className="flex items-start gap-2 bg-amber-500/10 rounded-lg p-2">
+                  <span className="text-base shrink-0 mt-0.5">📁</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-medium text-amber-300 truncate">{folderName}</p>
+                    <p className="text-[11px] text-silver-500 truncate">{fp}</p>
+                  </div>
+                  <button
+                    onClick={() => handleOpenLocation(fp)}
+                    className="p-1 rounded text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all shrink-0"
+                    title="打开文件夹所在位置"
+                  >
+                    <FolderOpen size={12} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-// ── FilePickerModal ──
+// ── FileTreeModal ──
 
-function FilePickerModal({
-  files, query, onQueryChange, onSelect, onClose,
+function FileTreeModal({
+  files: allFiles, query, onQueryChange, onSelect, onClose,
 }: {
   files: FileEntry[]
   query: string
@@ -222,31 +339,123 @@ function FilePickerModal({
   onSelect: (selected: { file_id: string; file_name: string; file_path: string }[]) => void
   onClose: () => void
 }) {
-  const [selected, setSelected] = useState<Set<string>>(new Set())
-
-  const filtered = files.filter(f =>
-    f.name.toLowerCase().includes(query.toLowerCase()) ||
-    f.path.toLowerCase().includes(query.toLowerCase())
+  const filtered = useMemo(
+    () => query
+      ? allFiles.filter(f =>
+          f.name.toLowerCase().includes(query.toLowerCase()) ||
+          f.path.toLowerCase().includes(query.toLowerCase())
+        )
+      : allFiles,
+    [allFiles, query]
   )
 
-  const toggleFile = (id: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id); else next.add(id)
-      return next
-    })
+  const tree = useMemo(() => buildFileTree(filtered), [filtered])
+
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const clickRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => () => { if (clickRef.current) clearTimeout(clickRef.current) }, [])
+
+  const findNode = (path: string): TreeNode | null => {
+    const search = (nodes: TreeNode[]): TreeNode | null => {
+      for (const n of nodes) {
+        if (n.path === path) return n
+        if (n.children.length > 0) {
+          const found = search(n.children)
+          if (found) return found
+        }
+      }
+      return null
+    }
+    return search(tree)
   }
 
-  const handleSelect = () => {
-    const result = files.filter(f => selected.has(f.id)).map(f => ({
-      file_id: f.id, file_name: f.name, file_path: f.path,
-    }))
-    onSelect(result)
+  const handleNodeClick = useCallback((node: TreeNode) => {
+    if (clickRef.current) {
+      clearTimeout(clickRef.current)
+      clickRef.current = null
+      if (node.is_dir) {
+        setExpanded(prev => {
+          const next = new Set(prev)
+          if (next.has(node.path)) next.delete(node.path)
+          else next.add(node.path)
+          return next
+        })
+      } else {
+        const file = filtered.find(f => f.path === node.path)
+        if (file) {
+          onSelect([{ file_id: file.id, file_name: file.name, file_path: file.path }])
+          onClose()
+        }
+      }
+    } else {
+      clickRef.current = setTimeout(() => {
+        clickRef.current = null
+        setSelectedPath(node.path)
+      }, 250)
+    }
+  }, [filtered, onSelect, onClose])
+
+  const handleSelect = useCallback(() => {
+    if (!selectedPath) return
+    const node = findNode(selectedPath)
+    if (!node) return
+    let result: { file_id: string; file_name: string; file_path: string }[]
+    if (node.is_dir) {
+      result = [{ file_id: `__folder__/${node.path}`, file_name: node.name, file_path: node.path }]
+    } else {
+      const file = filtered.find(f => f.path === node.path)
+      result = file ? [{ file_id: file.id, file_name: file.name, file_path: file.path }] : []
+    }
+    if (result.length > 0) onSelect(result)
+    onClose()
+  }, [selectedPath, filtered, onSelect, onClose])
+
+  const renderNode = (node: TreeNode, depth: number) => {
+    const isSelected = node.path === selectedPath
+    if (node.is_dir) {
+      const isExpanded = expanded.has(node.path)
+      return (
+        <div key={node.path}>
+          <div
+            className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
+              isSelected ? 'bg-accent-cyan/15 text-white' : 'text-silver-300 hover:bg-white/5'
+            }`}
+            style={{ paddingLeft: `${8 + depth * 16}px` }}
+            onClick={() => handleNodeClick(node)}
+          >
+            <span className="text-xs w-4 shrink-0 text-silver-500">{isExpanded ? '▾' : '▸'}</span>
+            <span className="text-base shrink-0">📁</span>
+            <span className="text-sm truncate flex-1">{node.name}</span>
+            {!isExpanded && (
+              <span className="text-[11px] text-silver-500 shrink-0 whitespace-nowrap">
+                ({collectFilePaths(node).length} 个文件)
+              </span>
+            )}
+          </div>
+          {isExpanded && node.children.map(child => renderNode(child, depth + 1))}
+        </div>
+      )
+    }
+    return (
+      <div
+        key={node.path}
+        className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer transition-all ${
+          isSelected ? 'bg-accent-cyan/15 text-white' : 'text-silver-300 hover:bg-white/5'
+        }`}
+        style={{ paddingLeft: `${24 + depth * 16}px` }}
+        onClick={() => handleNodeClick(node)}
+      >
+        <span className="text-base shrink-0">{getFileIcon(node.name)}</span>
+        <span className="text-sm truncate flex-1">{node.name}</span>
+      </div>
+    )
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 animate-fade-in">
-      <div className="bg-surface border border-subtle rounded-xl w-[480px] max-h-[520px] flex flex-col shadow-2xl animate-slide-up" style={{ animationDelay: '50ms' }}>
+      <div className="bg-surface border border-subtle rounded-xl w-[520px] max-h-[560px] flex flex-col shadow-2xl animate-slide-up" style={{ animationDelay: '50ms' }}>
         <div className="p-3 border-b border-subtle">
           <input
             value={query}
@@ -256,27 +465,10 @@ function FilePickerModal({
             autoFocus
           />
         </div>
-        <div className="flex-1 overflow-y-auto p-2 space-y-0.5">
-          {filtered.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => toggleFile(f.id)}
-              className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg text-left transition-all ${
-                selected.has(f.id)
-                  ? 'bg-accent-cyan/15 text-white'
-                  : 'text-silver-300 hover:bg-white/5'
-              }`}
-            >
-              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${
-                selected.has(f.id) ? 'border-accent-cyan bg-accent-cyan' : 'border-silver-500'
-              }`}>
-                {selected.has(f.id) && <Check size={10} className="text-white" />}
-              </div>
-              <span className="text-sm truncate flex-1">{f.name}</span>
-              <span className="text-[11px] text-silver-500 shrink-0 truncate max-w-[180px]">{f.path}</span>
-            </button>
-          ))}
-          {filtered.length === 0 && (
+        <div className="flex-1 overflow-y-auto p-2">
+          {tree.length > 0 ? (
+            tree.map(node => renderNode(node, 0))
+          ) : (
             <p className="text-xs text-center text-silver-500 py-8">无匹配文件</p>
           )}
         </div>
@@ -284,10 +476,10 @@ function FilePickerModal({
           <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm text-silver-400 hover:text-white hover:bg-white/10 transition-all">取消</button>
           <button
             onClick={handleSelect}
-            disabled={selected.size === 0}
+            disabled={!selectedPath}
             className="px-3 py-1.5 rounded-lg text-sm bg-accent-cyan/20 text-accent-cyan hover:bg-accent-cyan/30 disabled:opacity-30 transition-all"
           >
-            附加 ({selected.size})
+            选择
           </button>
         </div>
       </div>
@@ -298,7 +490,7 @@ function FilePickerModal({
 // ── ChatInput ──
 
 function ChatInput({ onSend, onStop, streaming }: {
-  onSend: (msg: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[]) => void
+  onSend: (msg: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[], attachedFolders?: string[]) => void
   onStop: () => void
   streaming: boolean
 }) {
@@ -308,14 +500,22 @@ function ChatInput({ onSend, onStop, streaming }: {
   const [allFiles, setAllFiles] = useState<FileEntry[]>([])
   const [filePickerQuery, setFilePickerQuery] = useState('')
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const [attachedFolders, setAttachedFolders] = useState<string[]>([])
 
   const handleSend = useCallback(() => {
     const trimmed = text.trim()
-    if ((!trimmed && attachedFiles.length === 0) || streaming) return
-    onSend(trimmed || '(文件附件)', attachedFiles.length > 0 ? attachedFiles : undefined)
+    if ((!trimmed && attachedFiles.length === 0 && attachedFolders.length === 0) || streaming) return
+    let msgContent = trimmed || '(文件附件)'
+    // Embed folder paths as text so they persist in DB and are visible to the LLM.
+    if (attachedFolders.length > 0) {
+      const folderLines = attachedFolders.map(p => `📁 ${p}`).join('\n')
+      msgContent = `${folderLines}\n\n${msgContent}`
+    }
+    onSend(msgContent, attachedFiles.length > 0 ? attachedFiles : undefined, attachedFolders)
     setText('')
     setAttachedFiles([])
-  }, [text, streaming, onSend, attachedFiles])
+    setAttachedFolders([])
+  }, [text, streaming, onSend, attachedFiles, attachedFolders])
 
   useEffect(() => {
     if (!streaming && inputRef.current) inputRef.current.focus()
@@ -332,11 +532,20 @@ function ChatInput({ onSend, onStop, streaming }: {
   }, [])
 
   const handleSelectFiles = useCallback((selected: { file_id: string; file_name: string; file_path: string }[]) => {
+    const files = selected.filter(f => !f.file_id.startsWith('__folder__'))
+    const folders = selected.filter(f => f.file_id.startsWith('__folder__')).map(f => f.file_path)
     setAttachedFiles((prev) => {
       const existing = new Set(prev.map(f => f.file_id))
-      const newFiles = selected.filter(f => !existing.has(f.file_id))
+      const newFiles = files.filter(f => !existing.has(f.file_id))
       return [...prev, ...newFiles]
     })
+    if (folders.length > 0) {
+      setAttachedFolders(prev => {
+        const existing = new Set(prev)
+        const newFolders = folders.filter(f => !existing.has(f))
+        return [...prev, ...newFolders]
+      })
+    }
     setShowFilePicker(false)
     setFilePickerQuery('')
   }, [])
@@ -345,8 +554,25 @@ function ChatInput({ onSend, onStop, streaming }: {
     setAttachedFiles((prev) => prev.filter(f => f.file_id !== fileId))
   }, [])
 
+  const handleRemoveFolder = useCallback((folderPath: string) => {
+    setAttachedFolders(prev => prev.filter(p => p !== folderPath))
+  }, [])
+
   return (
     <div className="flex flex-col gap-2">
+      {attachedFolders.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {attachedFolders.map(p => (
+            <span key={p} className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/10 text-[11px] text-amber-400 border border-amber-500/20">
+              <span>📁</span>
+              <span className="max-w-[120px] truncate">{p.split('/').pop()}</span>
+              <button onClick={() => handleRemoveFolder(p)} className="hover:text-red-400 transition-colors">
+                <X size={10} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       {attachedFiles.length > 0 && (
         <div className="flex flex-wrap gap-1.5">
           {attachedFiles.map(f => (
@@ -396,7 +622,7 @@ function ChatInput({ onSend, onStop, streaming }: {
         ) : (
           <button
             onClick={handleSend}
-            disabled={!text.trim() && attachedFiles.length === 0}
+            disabled={!text.trim() && attachedFiles.length === 0 && attachedFolders.length === 0}
             className="p-3 rounded-xl bg-accent-cyan/20 text-accent-cyan hover:bg-accent-cyan/30 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
           >
             <Send size={18} />
@@ -404,7 +630,7 @@ function ChatInput({ onSend, onStop, streaming }: {
         )}
       </div>
       {showFilePicker && (
-        <FilePickerModal
+        <FileTreeModal
           files={allFiles}
           query={filePickerQuery}
           onQueryChange={setFilePickerQuery}
@@ -427,6 +653,11 @@ function describeAction(action: FileAction): string {
     case 'import_file': return `导入「${action.params.source}」→「${action.params.destination}」`
     case 'vault_add_file': return `加密添加到安全空间: 「${action.params.file_path}」`
     case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」到文件`
+    case 'move_file_by_id': return `移动文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
+    case 'copy_file_by_id': return `复制文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
+    case 'delete_file_by_id': return `删除文件（ID: ${action.params.file_id}）`
+    case 'rename_file_by_id': return `重命名文件（ID: ${action.params.file_id}）→「${action.params.new_name}」`
+    case 'vault_add_file_by_id': return `加密添加到安全空间（ID: ${action.params.file_id}）`
   }
 }
 
@@ -441,16 +672,17 @@ function ActionConfirmBar({
   if (actions.length === 0 && results.length === 0) return null
 
   if (results.length > 0) {
+    const hasFailure = results.some(r => r.startsWith('操作失败:'))
     return (
       <div className="px-4 pb-2">
-        <div className="glass rounded-xl p-3 border border-accent-teal/20 animate-fade-in">
-          <div className="flex items-center gap-2 text-sm text-accent-teal mb-1">
-            <Check size={14} />
-            <span className="font-medium">操作已执行</span>
+        <div className={`glass rounded-xl p-3 border animate-fade-in ${hasFailure ? 'border-amber-500/20' : 'border-accent-teal/20'}`}>
+          <div className={`flex items-center gap-2 text-sm mb-1 ${hasFailure ? 'text-amber-400' : 'text-accent-teal'}`}>
+            {hasFailure ? <AlertTriangle size={14} /> : <Check size={14} />}
+            <span className="font-medium">{hasFailure ? '部分操作未完成' : '操作已执行'}</span>
           </div>
           <div className="space-y-0.5">
             {results.map((r, i) => (
-              <p key={i} className="text-xs text-silver-400">{r}</p>
+              <p key={i} className={`text-xs ${r.startsWith('操作失败:') ? 'text-red-400' : 'text-silver-400'}`}>{r}</p>
             ))}
           </div>
         </div>

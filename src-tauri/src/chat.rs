@@ -6,7 +6,7 @@ use crate::store::MetadataStore;
 
 /// A file operation that the LLM can request the UI to execute.
 /// Serialized as `{"cmd":"rename_file","params":{"old_path":"...","new_name":"..."}}`
-/// for easy embedding in LLM output as `[ACTION:{"cmd":"...","params":{...}}]`.
+/// for easy embedding in LLM output as [{"cmd":"...","params":{...}}].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd", content = "params")]
 pub enum FileAction {
@@ -72,14 +72,15 @@ pub enum FileAction {
     },
 }
 
-/// Extract all `[ACTION:{"cmd":"...","params":{...}}]` markers from LLM output text.
+/// Extract all [{"cmd":"...","params":{...}}] markers from LLM output text.
 /// Uses brace-depth counting to correctly handle nested JSON objects.
 pub fn parse_actions(text: &str) -> Vec<FileAction> {
-    let marker = "[ACTION:";
+    let marker = "[action:";
+    let text_lower = text.to_lowercase();
     let mut actions = Vec::new();
     let mut search_from = 0;
 
-    while let Some(marker_start) = text[search_from..].find(marker) {
+    while let Some(marker_start) = text_lower[search_from..].find(marker) {
         let json_start = search_from + marker_start + marker.len();
         let remaining = &text[json_start..];
 
@@ -120,15 +121,23 @@ pub struct ChatActionsEvent {
     pub actions: Vec<FileAction>,
 }
 
-/// Strip all `[ACTION:{...}]` markers from text, returning clean display text.
+/// Strip all [{...}] markers from text, returning clean display text.
 pub fn strip_action_markers(text: &str) -> String {
-    let marker = "[ACTION:";
+    let marker = "[action:";
+    let text_lower = text.to_lowercase();
     let mut result = String::with_capacity(text.len());
     let mut search_from = 0;
 
-    while let Some(marker_start) = text[search_from..].find(marker) {
+    while let Some(marker_start) = text_lower[search_from..].find(marker) {
         result.push_str(&text[search_from..search_from + marker_start]);
-        let json_start = search_from + marker_start + marker.len();
+
+        // If the marker is wrapped in a backtick, include it in what we strip
+        let abs_pos = search_from + marker_start;
+        if abs_pos > 0 && text.as_bytes()[abs_pos - 1] == b'`' {
+            result.pop();
+        }
+
+        let json_start = abs_pos + marker.len();
         let remaining = &text[json_start..];
 
         let mut brace_depth: i32 = 0;
@@ -149,6 +158,13 @@ pub fn strip_action_markers(text: &str) -> String {
 
         if let Some(end) = json_end {
             search_from = json_start + end;
+            if text[search_from..].starts_with(']') {
+                search_from += 1;
+            }
+            // Skip trailing backtick if present
+            if search_from < text.len() && text.as_bytes()[search_from] == b'`' {
+                search_from += 1;
+            }
         } else {
             search_from = json_start + 1;
         }
@@ -160,7 +176,7 @@ pub fn strip_action_markers(text: &str) -> String {
 
 /// Check whether LLM output contains any action markers.
 pub fn has_actions(text: &str) -> bool {
-    text.contains("[ACTION:")
+    text.to_lowercase().contains("[action:")
 }
 
 // ── Data structures ──
@@ -276,53 +292,48 @@ const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家
 
 ## 文件操作能力
 
-**你不仅能回答问题，还能直接执行文件操作！** 在回复中嵌入 `[ACTION:JSON]` 标记即可请求执行操作。
+**你不仅能回答问题，还能直接执行文件操作！** 在回复中嵌入 [ACTION:JSON] 标记即可请求执行操作。
 标记会被自动提取执行，用户会看到确认提示。支持的操作为：
 
-### 重命名文件
-`[ACTION:{\"cmd\":\"rename_file\",\"params\":{\"old_path\":\"相对路径/旧文件名.txt\",\"new_name\":\"新文件名.txt\"}}]`
+### 移动文件（按ID）
+[ACTION:{\"cmd\":\"move_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]
 
-### 删除文件
-`[ACTION:{\"cmd\":\"delete_file\",\"params\":{\"file_path\":\"相对路径/文件名.txt\"}}]`
+### 重命名文件（按ID）
+[ACTION:{\"cmd\":\"rename_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"new_name\":\"新名称.txt\"}}]
 
-### 移动文件
-`[ACTION:{\"cmd\":\"move_file\",\"params\":{\"source\":\"相对路径/源文件.txt\",\"destination\":\"目标文件夹/源文件.txt\"}}]`
+### 删除文件（按ID）
+[ACTION:{\"cmd\":\"delete_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\"}}]
 
-### 复制文件
-`[ACTION:{\"cmd\":\"copy_file\",\"params\":{\"source\":\"相对路径/源文件.txt\",\"destination\":\"目标文件夹/源文件.txt\"}}]`
+### 复制文件（按ID）
+[ACTION:{\"cmd\":\"copy_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]
 
-### 导入外部文件
-`[ACTION:{\"cmd\":\"import_file\",\"params\":{\"source\":\"C:/外部文件.txt\",\"destination\":\"目标文件夹/文件名.txt\"}}]`
+### 添加到安全空间（按ID）
+[ACTION:{\"cmd\":\"vault_add_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"password\":\"密码\"}}]
 
 ### 添加标签
-`[ACTION:{\"cmd\":\"set_file_tags\",\"params\":{\"file_id\":\"文件ID\",\"tags\":[\"标签1\",\"标签2\"]}}]`
+[ACTION:{\"cmd\":\"set_file_tags\",\"params\":{\"file_id\":\"文件ID\",\"tags\":[\"标签1\",\"标签2\"]}}]
 
 **使用规则：**
-1. **优先使用 file_id-based 操作**（推荐，路径更准确）：
-   - 当看到文件列表中的 `ID: xxxxx` 时，在 action 中使用 `file_id` 参数
-   - 例：`[ACTION:{\"cmd\":\"move_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]`
-   - 例：`[ACTION:{\"cmd\":\"rename_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"new_name\":\"新名称.txt\"}}]`
-   - 例：`[ACTION:{\"cmd\":\"delete_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\"}}]`
-   - `copy_file_by_id` 和 `vault_add_file_by_id` 也类似
-2. 只有当没有 file_id 可用时（如用户手动输入路径），才使用旧的路径-based action。
-3. 每个 `[ACTION:...]` 只能对应一个操作。需要多个操作时，输出多个标记。
-4. 操作标记应嵌入在回复文本中合适的位置，用户在确认前会看到你的完整回复。
-5. 用户的文件路径都是相对于应用扫描根目录的相对路径（如 `文档/报告.pdf`）。
+1. **绝对不能使用路径字符串引用文件。只能用 file_id。** 当看到文件上下文中的 ID: xxxxx 时，将 file_id 原样复制到 action 参数中。
+	   - 例：[{\"cmd\":\"move_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]
+	   - 例：[{\"cmd\":\"rename_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"new_name\":\"新名称.txt\"}}]
+	   - 例：[{\"cmd\":\"delete_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\"}}]
+2. 每个 [...] 只能对应一个操作。需要多个操作时，输出多个标记。
+3. 操作标记应嵌入在回复文本中合适的位置，用户在确认前会看到你的完整回复。
+4. 只有用户明确要求执行操作时，才使用 action 标记。不要自作主张。
+5. 删除/移动等有风险的操作，一定要用户明确表达意图后才使用 action 标记。
+6. 操作执行后会自动显示结果，回复中无需重复说明操作已执行。
+7. 如果操作需要信息（如密码、目标路径），先问清楚再使用 action 标记。
+8. 操作执行后建议告知用户结果，或提出下一步建议。
+9. **不要在 [ACTION:...] 标记外套反引号或代码块。** 标记本身已可被识别，额外包装会导致显示异常。
+9. **不要在 [ACTION:...] 标记外套反引号或代码块。** 标记本身已可被识别，额外包装会导致显示异常。
 
-**路径格式严格要求（非常重要！）：**
-- 禁止添加前导斜杠 `/`。正确：`文档/报告.pdf`，错误：`/文档/报告.pdf`
-- 禁止 URL 编码。正确：`合同 2024.pdf`，错误：`合同%202024.pdf`
-- 禁止改变文件扩展名。原文件是 `.md` 就写 `.md`，不能改成 `.pdf`
-- 禁止在路径前后添加多余空格
-- 目标路径也必须是相对路径，文件夹名不能带多余空格
-- 仔细查看文件上下文中的\"附加文件路径列表\"，原样使用那里的路径
-- 禁止将简体中文转换为繁体中文。如果路径中是\"复杂度\"，就写\"复杂度\"，不要写\"複雜度\"
+### 文件夹操作规则
 
-6. 只有用户明确要求执行操作时，才使用 action 标记。不要自作主张。
-7. 删除/移动等有风险的操作，一定要用户明确表达意图后才使用 action 标记。
-8. 操作执行后会自动显示结果，回复中无需重复说明操作已执行。
-9. 如果操作需要信息（如密码、目标路径），先问清楚再使用 action 标记。
-10. 操作执行后建议告知用户结果，或提出下一步建议。
+当系统在「附加文件夹路径」区域提供了文件夹列表时：
+1. 这些文件夹是用户指定的目标位置，应直接作为 destination 参数使用
+2. 不要创建额外的子目录层级，除非用户明确要求
+3. destination 路径保持简洁，不要添加多余空格、标点或分隔符
 
 ## 助手行为指南
 

@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Semantic Drive AI - 语义智能文件管家</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg-primary: #0a0e1a;
+    --bg-card: rgba(255,255,255,0.04);
+    --border: rgba(255,255,255,0.06);
+    --text-primary: #f0f2f8;
+    --text-secondary: #8892b0;
+    --accent-cyan: #5eead4;
+    --accent-teal: #2dd4bf;
+    --accent-blue: #60a5fa;
+    --accent-purple: #a78bfa;
+    --gradient-main: linear-gradient(135deg, #5eead4, #2dd4bf, #60a5fa);
+  }
+
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Noto Sans SC', sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.5;
+  }
+
+  /* === Slide — 自适应高度，打印自动分页 === */
+  .slide {
+    width: 100%;
+    max-width: 1200px;
+    min-height: 100vh;
+    margin: 0 auto;
+    padding: 40px 64px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    page-break-after: always;
+    border-bottom: 1px solid var(--border);
+  }
+  .slide:last-child { border-bottom: none; }
+
+  @media print {
+    body { background: #0a0e1a; }
+    .slide { min-height: 100vh; max-width: 100%; padding: 32px 48px; border: none; }
+    .slide-number { display: none; }
+  }
+
+  .slide::before {
+    content: '';
+    position: absolute;
+    top: -50%; right: -20%;
+    width: 600px; height: 600px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(94,234,212,0.03) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* === Typography (compact for PDF) === */
+  h1 { font-size: 3rem; font-weight: 900; letter-spacing: -0.02em; line-height: 1.15; }
+  h2 { font-size: 1.8rem; font-weight: 700; margin-bottom: 0.4rem; }
+  .subtitle { font-size: 0.95rem; color: var(--text-secondary); font-weight: 300; }
+  .gradient-text { background: var(--gradient-main); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+
+  .slide-number {
+    position: absolute; bottom: 16px; right: 48px;
+    font-size: 0.7rem; color: rgba(255,255,255,0.12);
+    font-weight: 300; letter-spacing: 0.1em;
+  }
+
+  /* === Badge === */
+  .badge {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 100px;
+    font-size: 0.65rem;
+    font-weight: 500;
+    margin-right: 0.3rem;
+    margin-bottom: 0.3rem;
+  }
+  .badge-cyan { background: rgba(94,234,212,0.12); color: var(--accent-cyan); border: 1px solid rgba(94,234,212,0.2); }
+  .badge-blue { background: rgba(96,165,250,0.12); color: var(--accent-blue); border: 1px solid rgba(96,165,250,0.2); }
+  .badge-purple { background: rgba(167,139,250,0.12); color: var(--accent-purple); border: 1px solid rgba(167,139,250,0.2); }
+  .badge-warm { background: rgba(251,191,36,0.12); color: #fbbf24; border: 1px solid rgba(251,191,36,0.2); }
+
+  /* === Cards (compact) === */
+  .card-grid { display: grid; gap: 0.7rem; margin-top: 0.8rem; }
+  .card-grid-2 { grid-template-columns: 1fr 1fr; }
+  .card-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.9rem;
+    backdrop-filter: blur(12px);
+  }
+  .card-icon { font-size: 1.4rem; margin-bottom: 0.3rem; }
+  .card-title { font-weight: 600; font-size: 0.9rem; margin-bottom: 0.25rem; }
+  .card-desc { font-size: 0.8rem; color: var(--text-secondary); line-height: 1.4; }
+
+  /* === Metric === */
+  .metric-row { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .metric-value { font-size: 1.8rem; font-weight: 900; background: var(--gradient-main); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .metric-label { font-size: 0.75rem; color: var(--text-secondary); }
+
+  /* === Image — 不裁剪，保持原始比例 === */
+  .slide-img {
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    display: block;
+  }
+  .slide-img-contained {
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    display: block;
+  }
+
+  /* === Feature list === */
+  .feature-list { list-style: none; margin-top: 0.4rem; }
+  .feature-list li { padding: 0.2rem 0; font-size: 0.8rem; display: flex; align-items: center; gap: 0.5rem; }
+  .feature-list li::before { content: '▸'; color: var(--accent-cyan); font-weight: bold; }
+
+  /* === Layout helpers === */
+  .flex-row { display: flex; gap: 1.2rem; align-items: center; }
+  .flex-row > * { flex: 1; }
+  .flex-center { display: flex; align-items: center; justify-content: center; }
+  .mt-1 { margin-top: 0.7rem; }
+  .mt-2 { margin-top: 1rem; }
+  .mb-1 { margin-bottom: 0.5rem; }
+  .text-center { text-align: center; }
+  .text-secondary { color: var(--text-secondary); }
+
+  /* Arch layer cards (for Slide 6) */
+  .arch-row { display: flex; gap: 0.5rem; align-items: center; justify-content: center; margin-top: 0.5rem; }
+  .arch-layer {
+    flex: 1;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.6rem;
+    text-align: center;
+    max-width: 200px;
+  }
+  .arch-layer .layer-label { font-size: 0.65rem; font-weight: 500; color: var(--accent-cyan); }
+  .arch-arrow { color: var(--text-secondary); font-size: 1.2rem; flex-shrink: 0; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .slide { padding: 24px 20px; }
+    h1 { font-size: 1.8rem; }
+    h2 { font-size: 1.3rem; }
+    .card-grid-2, .card-grid-3 { grid-template-columns: 1fr; }
+    .flex-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ==================== SLIDE 1: 封面 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <div style="margin-bottom:1.5rem;">
+      <span class="badge badge-cyan">产品创新赛道</span>
+      <span class="badge badge-blue">AI + 移动存储</span>
+    </div>
+    <h1><span class="gradient-text">Semantic Drive AI</span></h1>
+    <h2 style="font-weight:300; font-size:1.4rem; color:var(--text-secondary); margin-top:0.4rem;">
+      语义智能文件管家
+    </h2>
+    <p style="font-size:1rem; color:var(--text-secondary); margin-top:1rem; max-width:550px;">
+      面向移动存储设备的全离线 AI 驱动文件管理系统
+    </p>
+    <div class="metric-row" style="margin-top:2rem;">
+      <div class="metric">
+        <div class="metric-value">100%</div>
+        <div class="metric-label">全离线运行</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">零</div>
+        <div class="metric-label">云端依赖</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">&lt;2GB</div>
+        <div class="metric-label">完整体积含模型</div>
+      </div>
+      <div class="metric">
+        <div class="metric-value">即插即用</div>
+        <div class="metric-label">U盘/移动SSD</div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">1 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 2: 痛点 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-warm">Problem</span>
+    <h2 style="margin-top:0.3rem;">移动存储，<span style="color:var(--accent-teal);">智能缺口</span></h2>
+    <p class="subtitle">U 盘、移动 SSD 无处不在，但文件管理方式仍停留在二十年前</p>
+
+    <div class="card-grid card-grid-2" style="margin-top:0.7rem;">
+      <div class="card">
+        <div class="card-icon">🔍</div>
+        <div class="card-title">查找靠翻，搜索靠猜</div>
+        <div class="card-desc">Windows 搜索不支持自然语言，文件名不记得就找不到</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📂</div>
+        <div class="card-title">杂乱无章</div>
+        <div class="card-desc">文件散落各处，没有自动归类，没有智能标签</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">☁️</div>
+        <div class="card-title">云端方案水土不服</div>
+        <div class="card-desc">主流 AI 搜索均需联网，离线场景无法覆盖</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔐</div>
+        <div class="card-title">隐私顾虑</div>
+        <div class="card-desc">敏感文件不敢上传云端，需要本地私有方案</div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:0.7rem; margin-top:0.5rem;">
+      <img src="计算机自带传统搜索的不便.png" alt="传统搜索不便" style="flex:1; min-width:0;" class="slide-img">
+      <img src="混乱没法分类的大量文件.png" alt="文件杂乱" style="flex:1; min-width:0;" class="slide-img">
+    </div>
+  </div>
+  <div class="slide-number">2 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 3: 解决方案 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-cyan">Solution</span>
+    <h2 style="margin-top:0.3rem;">
+      用自然语言，<span class="gradient-text">管理你的文件</span>
+    </h2>
+    <p class="subtitle" style="max-width:650px;">
+      即插即用的便携桌面应用，通过自然语言在移动存储设备上搜索、整理和保护文件，<strong style="color:var(--text-primary);">完全离线</strong>。
+    </p>
+
+    <div class="card-grid card-grid-3" style="margin-top:0.7rem;">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:2rem; margin-bottom:0.3rem;">🗣️</div>
+        <div class="card-title">输入自然语言</div>
+        <div class="card-desc">"上个月的PPT""找机器学习的PDF"</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:2rem; margin-bottom:0.3rem;">🧠</div>
+        <div class="card-title">AI 理解意图</div>
+        <div class="card-desc">语义嵌入 + LLM 推理，理解真实需求</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:2rem; margin-bottom:0.3rem;">🎯</div>
+        <div class="card-title">秒级精确定位</div>
+        <div class="card-desc">混合搜索 + 智能分类，像聊天一样简单</div>
+      </div>
+    </div>
+
+    <!-- 解决方案 Mermaid 图 -->
+    <img src="mermaid用自然语言管理你的文件.png" alt="解决方案流程图" style="width:100%; margin-top:0.5rem;" class="slide-img">
+  </div>
+  <div class="slide-number">3 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 4: 核心功能 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-blue">Features</span>
+    <h2 style="margin-top:0.3rem;">四大核心功能</h2>
+    <p class="subtitle">覆盖文件管理全场景</p>
+
+    <div class="card-grid-2" style="display:grid; gap:0.6rem; grid-template-columns:1fr 1fr; margin-top:0.5rem;">
+      <div class="card" style="padding:0.7rem;">
+        <img src="智能搜索界面展示.png" alt="智能搜索" style="width:100%; margin-bottom:0.4rem;" class="slide-img">
+        <div class="card-title"><span style="color:var(--accent-cyan);">🔎</span> 智能搜索</div>
+        <div class="card-desc">语义搜索 + FTS5 全文搜索，支持时间/类型/标签过滤</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <img src="文件分类界面展示.png" alt="文件分类" style="width:100%; margin-bottom:0.4rem;" class="slide-img">
+        <div class="card-title"><span style="color:var(--accent-cyan);">🏷️</span> 智能分类</div>
+        <div class="card-desc">自动按内容归类 + 智能标签，不移动原文件</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <img src="整理建议页面展示.png" alt="整理建议" style="width:100%; margin-bottom:0.4rem;" class="slide-img">
+        <div class="card-title"><span style="color:var(--accent-cyan);">📋</span> 整理建议</div>
+        <div class="card-desc">自动识别重复文件，一键去重整理</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <img src="安全空间界面展示.png" alt="安全空间" style="width:100%; margin-bottom:0.4rem;" class="slide-img">
+        <div class="card-title"><span style="color:var(--accent-cyan);">🔒</span> 安全空间</div>
+        <div class="card-desc">AES-256-GCM 加密存储，保护隐私文件</div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">4 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 5: 语义搜索 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-purple">AI Capabilities</span>
+    <h2 style="margin-top:0.3rem;">语义搜索</h2>
+    <p class="subtitle">BGE 嵌入模型将查询和文件映射到语义空间，向量相似度匹配而非关键词</p>
+
+    <div class="card" style="margin-top:0.7rem;">
+      <div style="display:flex; gap:0.7rem;">
+        <div style="flex:1;">
+          <div class="card-icon">🧠</div>
+          <div class="card-title">工作原理</div>
+          <div class="card-desc" style="font-size:0.8rem;">
+            搜索"上个月的PPT" → BGE 将查询转为 512 维向量 → 与所有文件向量的余弦相似度排序 → 结合 FTS5 关键词评分 → 返回混合排序结果。<br><br>
+            <strong>优势：</strong>即使文件名不含关键词，也能通过<em>内容语义</em>匹配到正确文件。
+          </div>
+        </div>
+        <div style="flex:1;">
+          <div class="card-icon">🔍</div>
+          <div class="card-title">搜索方式</div>
+          <div class="card-desc" style="font-size:0.8rem;">
+            <strong>语义搜索：</strong>自然语言理解，找"去年的财务报表"→ 匹配内容含义<br><br>
+            <strong>关键词搜索：</strong>FTS5 全文索引，毫秒级精确匹配<br><br>
+            <strong>混合搜索：</strong>两者加权联合排序，结果更精准
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:0.5rem; margin-top:0.5rem; height:180px; min-height:0;">
+      <img src="智能搜索上个月的ppt文件展示.png" alt="语义搜索结果" style="flex:1; height:100%; object-fit:contain; min-height:0;" class="slide-img">
+      <img src="通过tag搜索.png" alt="标签搜索" style="flex:1; height:100%; object-fit:contain; min-height:0;" class="slide-img">
+    </div>
+  </div>
+  <div class="slide-number">5 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 6: 智能聊天 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-purple">AI Capabilities</span>
+    <h2 style="margin-top:0.3rem;">智能聊天</h2>
+    <p class="subtitle">本地 Qwen2.5 GGUF 驱动的 AI 助手，理解上下文、执行文件操作</p>
+
+    <div class="flex-row" style="align-items:stretch; gap:0.7rem; margin-top:0.5rem;">
+      <div class="card">
+        <div class="card-icon">📝</div>
+        <div class="card-title">示例 1：文件文档总结</div>
+        <div class="card-desc" style="font-size:0.8rem;">
+          👤 "帮我总结这个文档"<br><br>
+          🤖 AI 自动读取文件内容，调用 LLM 分析，返回结构化摘要——核心观点、关键数据、结论一览无余。
+        </div>
+        <img src="只能助手帮忙总结文档.png" alt="文档总结截图" style="width:100%; max-height:180px; object-fit:contain; margin-top:0.5rem;" class="slide-img">
+      </div>
+      <div class="card">
+        <div class="card-icon">🏷️</div>
+        <div class="card-title">示例 2：智能标签推荐</div>
+        <div class="card-desc" style="font-size:0.8rem;">
+          👤 "帮我把这个文档加合适的tag"<br><br>
+          🤖 AI 理解文件内容后，自动推荐语义相关标签：'机器学习'、'论文'、'2024'，一键添加。
+        </div>
+        <img src="帮忙给文件加tag.png" alt="智能标签截图" style="width:100%; max-height:180px; object-fit:contain; margin-top:0.5rem;" class="slide-img">
+      </div>
+    </div>
+    <img src="智能助手帮忙移动文件.png" alt="AI移动文件" style="width:100%; max-height:150px; object-fit:contain; margin-top:0.4rem;" class="slide-img">
+  </div>
+  <div class="slide-number">6 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 7: 技术架构 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-blue">Architecture</span>
+    <h2 style="margin-top:0.3rem;">技术架构</h2>
+    <p class="subtitle">Tauri v2 + Rust + React — 轻量、高性能、可移植</p>
+
+    <!-- 各层独立图片，自底向上排列 -->
+    <div class="arch-row" style="margin-top:0.7rem;">
+      <div class="arch-layer">
+        <div class="layer-label">🗄️ 存储层</div>
+        <img src="mermaid存储层.jpg" alt="存储层" style="width:100%; margin-top:0.3rem; border-radius:6px;">
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-layer">
+        <div class="layer-label">🦀 Rust 后端层</div>
+        <img src="mermaidRust后端层.jpg" alt="后端层" style="width:100%; margin-top:0.3rem; border-radius:6px;">
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-layer">
+        <div class="layer-label">🔗 IPC 桥接层</div>
+        <img src="mermaidIPC桥接层.jpg" alt="IPC层" style="width:100%; margin-top:0.3rem; border-radius:6px;">
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-layer">
+        <div class="layer-label">🖥️ 前端层</div>
+        <img src="mermaid前端层.jpg" alt="前端层" style="width:100%; margin-top:0.3rem; border-radius:6px;">
+      </div>
+    </div>
+
+    <div class="card-grid card-grid-3" style="margin-top:0.5rem;">
+      <div class="card" style="padding:0.6rem;">
+        <div class="card-title" style="font-size:0.8rem; color:var(--accent-cyan);">前端 React 19</div>
+        <div class="card-desc" style="font-size:0.7rem;">TypeScript + Tailwind + Zustand + 虚拟滚动</div>
+      </div>
+      <div class="card" style="padding:0.6rem;">
+        <div class="card-title" style="font-size:0.8rem; color:var(--accent-teal);">桥接 Tauri v2</div>
+        <div class="card-desc" style="font-size:0.7rem;">IPC invoke + Event 事件推送</div>
+      </div>
+      <div class="card" style="padding:0.6rem;">
+        <div class="card-title" style="font-size:0.8rem; color:var(--accent-blue);">后端 Rust</div>
+        <div class="card-desc" style="font-size:0.7rem;">walkdir/lopdf/calamine/candle/rusqlite</div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">7 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 8: 全离线 AI ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-purple">Offline AI</span>
+    <h2 style="margin-top:0.3rem;">
+      纯本地 AI，<span class="gradient-text">拒绝联网</span>
+    </h2>
+    <p class="subtitle">所有 AI 模型在本地运行，无需任何云端 API</p>
+
+    <div class="card-grid card-grid-3" style="margin-top:0.7rem;">
+      <div class="card">
+        <div class="card-icon">🕹️</div>
+        <div class="card-title">推理框架：Candle</div>
+        <div class="card-desc" style="font-size:0.75rem;">纯 Rust ML 推理框架，零 Python，无需 CUDA，CPU 可运行</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🤖</div>
+        <div class="card-title">LLM：Qwen2.5 GGUF</div>
+        <div class="card-desc" style="font-size:0.75rem;">阿里 Qwen2.5 量化模型 (Q4_K_M)，~700MB，中文理解能力强</div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📐</div>
+        <div class="card-title">嵌入：BGE-small-zh</div>
+        <div class="card-desc" style="font-size:0.75rem;">BAAI 开源中文嵌入模型，~33MB，512 维语义向量</div>
+      </div>
+    </div>
+
+    <img src="models文件夹.png" alt="模型文件结构" style="width:100%; margin-top:0.5rem;" class="slide-img-contained">
+  </div>
+  <div class="slide-number">8 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 9: 隐私与安全 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-warm">Privacy & Security</span>
+    <h2 style="margin-top:0.3rem;">隐私至上，安全无忧</h2>
+    <p class="subtitle">数据永远留在你的设备上</p>
+
+    <div class="flex-row" style="align-items:stretch; gap:0.7rem; margin-top:0.5rem;">
+      <div style="flex:1;">
+        <div class="card" style="height:100%;">
+          <div class="card-icon">🔐</div>
+          <div class="card-title">加密安全空间 (Vault)</div>
+          <ul class="feature-list">
+            <li><strong>AES-256-GCM</strong> — 行业标准对称加密</li>
+            <li><strong>Argon2id</strong> — 抗 GPU/ASIC 攻击</li>
+            <li>文件加密存储在 `.semanticdrive/vault/`</li>
+          </ul>
+        </div>
+      </div>
+      <div style="flex:1;">
+        <div class="card" style="height:100%;">
+          <div class="card-icon">🛡️</div>
+          <div class="card-title">隐私设计原则</div>
+          <ul class="feature-list">
+            <li><strong>零网络请求</strong> — 所有操作在本地完成</li>
+            <li><strong>非破坏性</strong> — 永不修改原始文件</li>
+            <li><strong>即拔即走</strong> — 数据随设备带走</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <img src="安全空间放了一个文件.png" alt="安全空间" style="width:100%; margin-top:0.5rem;" class="slide-img">
+  </div>
+  <div class="slide-number">9 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 10: 性能优化 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-cyan">Performance</span>
+    <h2 style="margin-top:0.3rem;">性能优化实践</h2>
+    <p class="subtitle">让 AI 应用在移动设备上流畅运行</p>
+
+    <div class="card-grid card-grid-2" style="margin-top:0.5rem;">
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem;"><span style="color:var(--accent-cyan);">⚡</span> FTS5 全文搜索</div>
+        <div class="card-desc" style="font-size:0.75rem;">SQLite FTS5 引擎替代 O(N) 字符串扫描，秒级→毫秒级</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem;"><span style="color:var(--accent-cyan);">⚡</span> 增量扫描</div>
+        <div class="card-desc" style="font-size:0.75rem;">基于修改时间的增量更新，首次后仅处理变更文件</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem;"><span style="color:var(--accent-cyan);">⚡</span> 分阶段评分</div>
+        <div class="card-desc" style="font-size:0.75rem;">先关键词过滤候选集，再向量精排，计算量减少 80%+</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem;"><span style="color:var(--accent-cyan);">⚡</span> 虚拟滚动</div>
+        <div class="card-desc" style="font-size:0.75rem;">react-virtuoso 万级文件流畅滚动，DOM 节点恒定</div>
+      </div>
+    </div>
+
+    <!-- 性能对比柱状图 -->
+    <div style="margin-top:0.7rem; background:var(--bg-card); border:1px solid var(--border); border-radius:10px; padding:0.8rem 1.2rem;">
+      <p style="font-size:0.7rem; color:var(--text-secondary); margin-bottom:0.5rem; text-align:center;">搜索响应时间对比（示意）</p>
+      <div style="margin-bottom:0.5rem;">
+        <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.2rem;">
+          <span style="font-size:0.7rem; color:var(--text-secondary); min-width:3.5em;">优化前</span>
+          <div style="flex:1; height:22px; background:rgba(239,68,68,0.15); border-radius:4px; overflow:hidden;">
+            <div style="height:100%; width:85%; background:linear-gradient(90deg,#ef4444,#f97316); border-radius:4px; display:flex; align-items:center; padding-left:0.4rem;">
+              <span style="font-size:0.6rem; color:#fff; font-weight:600;">~3-5秒</span>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:0.6rem;">
+          <span style="font-size:0.7rem; color:var(--text-secondary); min-width:3.5em;">优化后</span>
+          <div style="flex:1; height:22px; background:rgba(94,234,212,0.1); border-radius:4px; overflow:hidden;">
+            <div style="height:100%; width:8%; background:linear-gradient(90deg,#5eead4,#2dd4bf); border-radius:4px; display:flex; align-items:center; padding-left:0.4rem; min-width:fit-content;">
+              <span style="font-size:0.6rem; color:#0a0e1a; font-weight:600; padding:0 0.4rem;">~0.1-0.3秒</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p style="font-size:0.6rem; color:var(--text-secondary); text-align:center; margin:0;">搜索延迟降低 95% 以上</p>
+    </div>
+  </div>
+  <div class="slide-number">10 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 11: 应用场景 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-warm">Scenarios</span>
+    <h2 style="margin-top:0.3rem;">应用场景</h2>
+    <p class="subtitle">解决真实世界中实实在在的问题</p>
+
+    <div class="card-grid card-grid-3" style="margin-top:0.5rem;">
+      <div class="card">
+        <div class="card-icon">🎓</div>
+        <div class="card-title">学生学习</div>
+        <div class="card-desc" style="font-size:0.75rem;">
+          考研/留学资料 U 盘，海量 PDF 课件、论文、笔记。输入"去年的线性代数笔记"秒速定位
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">💼</div>
+        <div class="card-title">办公文件</div>
+        <div class="card-desc" style="font-size:0.75rem;">
+          移动硬盘中的合同、报表、方案。语义搜索 + 标签管理井井有条
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔧</div>
+        <div class="card-title">移动存储配套</div>
+        <div class="card-desc" style="font-size:0.75rem;">
+          U 盘/SSD 出厂预装软件，即插即用，差异化竞争利器
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex; gap:0.5rem; margin-top:0.5rem; height:160px; min-height:0;">
+      <img src="电脑办公.png" alt="办公" style="flex:1; height:100%; object-fit:contain; min-height:0;" class="slide-img">
+      <img src="办公室示意图.png" alt="办公室" style="flex:1; height:100%; object-fit:contain; min-height:0;" class="slide-img">
+      <img src="一个U盘.png" alt="U盘" style="flex:1; height:100%; object-fit:contain; min-height:0;" class="slide-img">
+    </div>
+  </div>
+  <div class="slide-number">11 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 12: 商业化路径 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="badge badge-warm">Business</span>
+    <h2 style="margin-top:0.3rem;">商业化路径</h2>
+    <p class="subtitle">从竞赛作品到实际产品的路线图</p>
+
+    <div class="card-grid card-grid-3" style="margin-top:0.7rem;">
+      <div class="card">
+        <div style="font-size:1.6rem; margin-bottom:0.3rem; color:var(--accent-cyan);">阶段 1</div>
+        <div class="card-title">U 盘预装</div>
+        <div class="card-desc" style="font-size:0.75rem;">
+          与移动存储厂商合作，作为出厂预装增值软件。成本低（&lt;2GB），差异化卖点
+        </div>
+      </div>
+      <div class="card">
+        <div style="font-size:1.6rem; margin-bottom:0.3rem; color:var(--accent-teal);">阶段 2</div>
+        <div class="card-title">专业版功能</div>
+        <div class="card-desc" style="font-size:0.75rem;">
+          更大模型、批量处理、企业级加密审计。订阅/买断制，目标教育+中小企业
+        </div>
+      </div>
+      <div class="card">
+        <div style="font-size:1.6rem; margin-bottom:0.3rem; color:var(--accent-blue);">阶段 3</div>
+        <div class="card-title">开放生态</div>
+        <div class="card-desc" style="font-size:0.75rem;">
+          开放插件系统 + API，第三方扩展文件类型支持、自定义 AI 模型
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="slide-number">12 / 13</div>
+</section>
+
+<!-- ==================== SLIDE 13: 总结与展望 ==================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center; text-align:center;">
+    <span class="badge badge-cyan" style="margin:0 auto;">Summary</span>
+    <h2 style="margin-top:0.8rem;">
+      <span class="gradient-text">总结与展望</span>
+    </h2>
+
+    <div style="max-width:650px; margin:1.2rem auto;">
+      <p style="font-size:1rem; color:var(--text-secondary);">
+        Semantic Drive AI 将大语言模型和语义搜索技术带入移动存储设备，<br>
+        让每一个 U 盘都拥有自己的智能大脑。
+      </p>
+    </div>
+
+    <div class="card-grid card-grid-3" style="max-width:750px; margin:0 auto;">
+      <div class="card" style="text-align:center;">
+        <div style="font-size:1.6rem; color:var(--accent-cyan);">✔</div>
+        <div class="card-title">已完成</div>
+        <div class="card-desc" style="font-size:0.75rem;">Tauri v2 全栈、语义搜索、分类、聊天、加密、FTS5 优化</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:1.6rem; color:var(--accent-teal);">🚀</div>
+        <div class="card-title">进行中</div>
+        <div class="card-desc" style="font-size:0.75rem;">多模态预览、批量操作优化、插件系统</div>
+      </div>
+      <div class="card" style="text-align:center;">
+        <div style="font-size:1.6rem; color:var(--accent-blue);">🌟</div>
+        <div class="card-title">未来规划</div>
+        <div class="card-desc" style="font-size:0.75rem;">AI 模型热更新、企业级部署、移动端适配</div>
+      </div>
+    </div>
+
+    <div style="margin-top:1.5rem;">
+      <p style="font-size:0.85rem; color:var(--text-secondary);">产品创新赛道 — AI + 移动存储</p>
+      <p style="font-size:0.75rem; color:var(--text-secondary); margin-top:0.3rem;">感谢各位评委老师的时间与宝贵意见</p>
+    </div>
+  </div>
+  <div class="slide-number">13 / 13</div>
+</section>
+
+</body>
+</html>

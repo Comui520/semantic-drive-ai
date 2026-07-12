@@ -1,0 +1,15 @@
+node_modules/
+target/
+dist/
+*.exe
+*.dll
+.env
+.DS_Store
+Thumbs.db
+*.log
+models/
+.semanticdrive/
+src-tauri/target/
+*.gguf
+*.safetensors
+*.bin

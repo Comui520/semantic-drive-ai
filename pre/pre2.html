@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Semantic Drive AI — 语义智能文件管家</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #080c18;
+    --bg-card: rgba(255,255,255,0.03);
+    --border: rgba(255,255,255,0.07);
+    --text: #e8ecf4;
+    --text-dim: #7a85a8;
+    --indigo: #818cf8;
+    --emerald: #34d399;
+    --amber: #f59e0b;
+    --rose: #f472b6;
+    --gradient: linear-gradient(135deg, #818cf8, #34d399);
+  }
+
+  body {
+    font-family: 'Noto Sans SC', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+  }
+
+  .slide {
+    width: 100%;
+    max-width: 1150px;
+    min-height: 100vh;
+    margin: 0 auto;
+    padding: 44px 60px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    page-break-after: always;
+    border-bottom: 1px solid var(--border);
+  }
+  .slide:last-child { border-bottom: none; }
+
+  @media print {
+    body { background: #080c18; }
+    .slide { min-height: 100vh; max-width: 100%; padding: 36px 44px; border: none; }
+    .page-number { display: none; }
+  }
+
+  .slide::before {
+    content: '';
+    position: absolute;
+    top: -40%; right: -15%;
+    width: 500px; height: 500px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(129,140,248,0.04) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* Typography */
+  h1 { font-size: 3rem; font-weight: 900; letter-spacing: -0.02em; line-height: 1.2; }
+  h2 { font-size: 1.9rem; font-weight: 700; line-height: 1.25; }
+  .subtitle { font-size: 1rem; color: var(--text-dim); font-weight: 300; margin-top: 0.3rem; }
+  .subtitle-sm { font-size: 0.85rem; color: var(--text-dim); font-weight: 300; margin-top: 0.2rem; }
+  .gradient-text { background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+
+  .page-number {
+    position: absolute; bottom: 16px; right: 60px;
+    font-size: 0.7rem; color: rgba(255,255,255,0.1);
+    font-weight: 300; letter-spacing: 0.08em;
+  }
+
+  /* Tags */
+  .tag {
+    display: inline-block;
+    padding: 0.2rem 0.7rem;
+    border-radius: 100px;
+    font-size: 0.65rem;
+    font-weight: 500;
+    margin-bottom: 0.4rem;
+    background: rgba(129,140,248,0.12);
+    color: var(--indigo);
+    border: 1px solid rgba(129,140,248,0.2);
+  }
+  .tag-emerald { background: rgba(52,211,153,0.12); color: var(--emerald); border-color: rgba(52,211,153,0.2); }
+  .tag-amber { background: rgba(245,158,11,0.12); color: var(--amber); border-color: rgba(245,158,11,0.2); }
+  .tag-rose { background: rgba(244,114,182,0.12); color: var(--rose); border-color: rgba(244,114,182,0.2); }
+
+  /* Images — never crop, only scale */
+  .img {
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    display: block;
+  }
+
+  /* Split layout */
+  .split {
+    display: flex;
+    gap: 1.5rem;
+    flex: 1;
+    min-height: 0;
+  }
+  .split-visual { flex: 1.6; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  .split-content { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 0.6rem; min-height: 0; }
+
+  /* Feature item */
+  .feat {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.65rem 0.85rem;
+  }
+  .feat-label { font-size: 0.85rem; font-weight: 600; margin-bottom: 0.15rem; }
+  .feat-label span { margin-right: 0.4rem; }
+  .feat-desc { font-size: 0.75rem; color: var(--text-dim); line-height: 1.4; }
+
+  /* Cards */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.7rem; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.7rem; }
+  .grid4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.7rem; }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.9rem;
+    backdrop-filter: blur(12px);
+  }
+  .card-icon { font-size: 1.3rem; margin-bottom: 0.2rem; }
+  .card-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.2rem; }
+  .card-desc { font-size: 0.75rem; color: var(--text-dim); line-height: 1.4; }
+
+  /* Metrics */
+  .metrics { display: flex; gap: 2rem; flex-wrap: wrap; }
+  .metric-num { font-size: 2rem; font-weight: 900; background: var(--gradient); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  .metric-label { font-size: 0.75rem; color: var(--text-dim); }
+
+  /* Image row (2 or 3 images side by side) */
+  .img-row-2 { display: flex; gap: 0.6rem; height: 350px; min-height: 0; }
+  .img-row-2 img { flex: 1; height: 100%; object-fit: contain; min-height: 0; }
+  .img-row-3 { display: flex; gap: 0.6rem; height: 170px; min-height: 0; }
+  .img-row-3 img { flex: 1; height: 100%; object-fit: contain; min-height: 0; }
+
+  /* Bar chart */
+  .bar-chart { margin-top: 0.5rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  .bar-row { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; }
+  .bar-row .label { width: 3rem; color: var(--text-dim); flex-shrink: 0; }
+  .bar { height: 1.2rem; border-radius: 4px; background: var(--indigo); opacity: 0.7; min-width: 2rem; }
+  .bar-after { background: var(--emerald); }
+  .bar-row .value { color: var(--text-dim); flex-shrink: 0; font-size: 0.7rem; }
+
+  /* Architecture row */
+  .arch-row { display: flex; gap: 0.5rem; align-items: center; justify-content: center; }
+  .arch-layer { flex: 1; max-width: 175px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 0.5rem; text-align: center; }
+  .arch-label { font-size: 0.7rem; font-weight: 600; margin-bottom: 0.2rem; }
+  .arch-arrow { font-size: 1.2rem; color: var(--text-dim); flex-shrink: 0; }
+
+  /* Roadmap */
+  .roadmap { display: flex; gap: 1rem; margin-top: 0.5rem; }
+  .roadmap-col { flex: 1; }
+  .roadmap-col h4 { font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem; padding-bottom: 0.2rem; border-bottom: 1px solid var(--border); }
+  .roadmap-col ul { list-style: none; }
+  .roadmap-col li { font-size: 0.75rem; color: var(--text-dim); padding: 0.2rem 0; display: flex; align-items: center; gap: 0.3rem; }
+  .roadmap-col li::before { content: '·'; color: var(--indigo); font-weight: bold; }
+
+  .mt-1 { margin-top: 0.6rem; }
+  .mt-2 { margin-top: 1rem; }
+  .text-center { text-align: center; }
+  .text-dim { color: var(--text-dim); }
+
+  /* Flowchart */
+  .fc { display:flex; flex-direction:column; align-items:center; gap:0; }
+  .fc-node {
+    background:rgba(255,255,255,0.04); border:1px solid var(--border);
+    border-radius:10px; padding:0.5rem 1.5rem; text-align:center;
+  }
+  .fc-node .t { font-weight:600; color:var(--text); font-size:0.9rem; }
+  .fc-node .s { font-size:0.72rem; color:var(--text-dim); margin-top:0.05rem; }
+  .fc-grid { display:grid; grid-template-columns:1fr 1fr; width:340px; }
+  .fc-bar { grid-column:1/-1; height:12px; position:relative; }
+  .fc-bar .hl { position:absolute; top:6px; left:22%; right:22%; height:2px; background:rgba(255,255,255,0.12); }
+  .fc-bar .st { position:absolute; left:50%; width:2px; background:rgba(255,255,255,0.12); transform:translateX(-50%); }
+  .fc-bar .st-t { top:0; height:6px; }
+  .fc-bar .st-b { bottom:0; height:6px; }
+  .fc-arr { display:flex; flex-direction:column; align-items:center; height:16px; justify-content:flex-end; }
+  .fc-arr .ln { width:2px; height:11px; background:rgba(255,255,255,0.12); }
+  .fc-arr .hd { width:0; height:0; border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid rgba(255,255,255,0.12); }
+</style>
+</head>
+<body>
+
+<!-- ============================== SLIDE 1: COVER ============================== -->
+<section class="slide" style="text-align:center;">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center;">
+    <span class="tag" style="font-size:0.75rem; padding:0.25rem 1rem;">产品创新赛道 — AI + 移动存储</span>
+    <h1 style="font-size:3.2rem; margin-top:0.8rem;">
+      <span class="gradient-text">Semantic Drive AI</span>
+    </h1>
+    <p style="font-size:1.2rem; font-weight:300; color:var(--text-dim); margin-top:0.3rem;">语义智能文件管家</p>
+    <p style="font-size:0.9rem; color:var(--text-dim); max-width:500px; margin-top:0.8rem; line-height:1.5;">
+      AI 驱动的 U 盘文件管理工具<br>
+      用自然语言搜索、分类、整理你的文件<br>
+      全离线运行，即插即用
+    </p>
+    <div class="metrics" style="justify-content:center; margin-top:1rem;">
+      <div><div class="metric-num">100%</div><div class="metric-label">离线 AI</div></div>
+      <div><div class="metric-num">零</div><div class="metric-label">云端依赖</div></div>
+      <div><div class="metric-num">&lt;2GB</div><div class="metric-label">含模型体积</div></div>
+      <div><div class="metric-num">即插</div><div class="metric-label">即用</div></div>
+    </div>
+  </div>
+  <div class="page-number">1 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 2: PROBLEM ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual" style="flex:1.2;">
+      <div style="width:100%; display:flex; flex-direction:column; gap:0.6rem;">
+        <img src="计算机自带传统搜索的不便.png" alt="传统搜索的不便" style="width:100%; max-height:200px; object-fit:contain;" class="img">
+        <img src="混乱没法分类的大量文件.png" alt="文件混乱" style="width:100%; max-height:200px; object-fit:contain;" class="img">
+      </div>
+    </div>
+    <div class="split-content split-content-wide" style="flex:1.3;">
+      <span class="tag tag-amber">Pain Points</span>
+      <h2>移动存储的「文件灾难」</h2>
+      <div class="feat">
+        <div class="feat-label"><span></span>查找靠翻，搜索靠猜</div>
+        <div class="feat-desc">U 盘文件没有全文索引，搜文件名靠运气，忘文件名就靠逐个翻</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>杂乱无章，无从分类</div>
+        <div class="feat-desc">上百个文件混杂在一起，没有自动分类，整理全靠手动建文件夹</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>云端方案不适合移动存储</div>
+        <div class="feat-desc">主流 AI 管理工具依赖云服务，U 盘插入陌生电脑时无法使用</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">2 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 3: SOLUTION OVERVIEW ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag">Solution</span>
+    <h2 style="margin-top:0.2rem;">一句话找到你要的文件</h2>
+    <p class="subtitle">传统搜索靠文件名关键词匹配；语义搜索靠 AI 理解你的意图</p>
+    <div style="margin-top:0.7rem; flex:1; display:flex; align-items:center; justify-content:center;">
+      <div class="fc">
+
+        <div class="fc-node">
+          <div class="t">用户输入</div>
+          <div class="s">"上个月的PPT"</div>
+        </div>
+
+        <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+
+        <div class="fc-grid">
+          <div class="fc-bar"><div class="st st-t"></div><div class="hl"></div></div>
+
+          <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+          <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+
+          <div class="fc-node" style="background:rgba(129,140,248,0.08);border-color:rgba(129,140,248,0.2);">
+            <div class="t" style="color:var(--indigo);">BGE嵌入</div>
+            <div class="s">语义向量化</div>
+          </div>
+          <div class="fc-node" style="background:rgba(52,211,153,0.08);border-color:rgba(52,211,153,0.2);">
+            <div class="t" style="color:var(--emerald);">FTS5全文</div>
+            <div class="s">关键词匹配</div>
+          </div>
+
+          <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+          <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+
+          <div class="fc-bar"><div class="hl"></div><div class="st st-b"></div></div>
+        </div>
+
+        <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+
+        <div class="fc-node">
+          <div class="t">混合评分</div>
+          <div class="s">语义 + 关键词权重融合</div>
+        </div>
+
+        <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+
+        <div class="fc-node">
+          <div class="t">返回Top-K结果</div>
+          <div class="s">按相关性排序</div>
+        </div>
+
+        <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+
+        <div class="fc-node" style="background:rgba(129,140,248,0.06);border-color:rgba(129,140,248,0.15);">
+          <div class="t">LLM智能分析</div>
+          <div class="s">理解深层需求</div>
+        </div>
+
+        <div class="fc-arr"><div class="ln"></div><div class="hd"></div></div>
+
+        <div class="fc-node" style="background:rgba(245,158,11,0.06);border-color:rgba(245,158,11,0.15);">
+          <div class="t">执行操作</div>
+          <div class="s">移动 / 归类 / 打标签</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+  <div class="page-number">3 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 4: SEMANTIC SEARCH - HOW IT WORKS ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual">
+      <img src="智能搜索界面展示.png" alt="智能搜索界面" style="width:100%; max-height:380px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-content">
+      <span class="tag">Smart Search</span>
+      <h2>语义搜索：AI 理解你的意图</h2>
+      <p class="subtitle-sm">BGE 嵌入模型将查询和文件映射到同一语义空间</p>
+      <div class="feat">
+        <div class="feat-label"><span></span>工作流程</div>
+        <div class="feat-desc">输入"上个月的PPT" → BGE 转为 512 维向量 → 与所有文件向量计算余弦相似度 → FTS5 关键词评分加权 → 返回混合排序结果</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>三种搜索模式</div>
+        <div class="feat-desc"><strong>语义搜索：</strong>自然语言理解，找"去年的财务报表"=> 匹配内容含义<br>
+        <strong>关键词搜索：</strong>FTS5 全文索引，毫秒级精确匹配<br>
+        <strong>混合搜索：</strong>两者加权联合排序，结果更精准</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>核心优势</div>
+        <div class="feat-desc">即使文件名不含关键词，也能通过内容语义匹配到正确文件</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">4 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 5: SEARCH RESULT DEMO ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag">Smart Search</span>
+    <h2 style="margin-top:0.2rem;">搜索效果展示</h2>
+    <p class="subtitle">真实搜索结果截图 — 从自然语言到精准定位</p>
+    <div style="margin-top:0.6rem; flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:0.6rem;">
+      <div style="flex:1; display:flex; align-items:center; justify-content:center;">
+        <img src="智能搜索上个月的ppt文件展示.png" alt="搜索上个月的PPT" style="max-width:90%; max-height:380px; object-fit:contain;" class="img">
+      </div>
+      <div class="card" style="padding:0.5rem 0.7rem; max-width:500px; width:100%;">
+        <div class="card-title" style="font-size:0.75rem; color:var(--indigo);">"上个月的PPT"</div>
+        <div class="card-desc" style="font-size:0.7rem;">AI 自动理解时间范围 + 文件类型，精准定位到目标文件</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">5 / 19</div>
+</section>
+
+
+<!-- ============================== SLIDE 5: TAG SEARCH ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual">
+      <img src="通过tag搜索.png" alt="标签搜索界面" style="width:100%; max-height:400px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-content">
+      <span class="tag tag-emerald">Smart Search</span>
+      <h2>标签搜索：语义级快速筛选</h2>
+      <p class="subtitle-sm">通过语义标签快速筛选，比翻文件夹高效十倍</p>
+      <div class="feat">
+        <div class="feat-label"><span></span>AI 自动推荐标签</div>
+        <div class="feat-desc">文件扫描后自动识别内容主题并推荐标签，无需手动整理</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>多标签联合筛选</div>
+        <div class="feat-desc">支持组合多个标签精准定位文件，如"学习 + 2024 + 论文"</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>可自定义的标签体系</div>
+        <div class="feat-desc">用户可创建个人标签体系，AI 推荐的标签可编辑、合并、删除</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">6 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 6: SMART CHAT - OVERVIEW ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual" style="flex:1.6;">
+      <img src="智能助手帮忙移动文件.png" alt="智能聊天界面" style="width:100%; max-height:400px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-content" style="flex:1.2;">
+      <span class="tag">AI Chat</span>
+      <h2>智能聊天：对话式文件管理</h2>
+      <p class="subtitle-sm">本地 Qwen2.5 驱动的 AI 助手 — 理解上下文、操作文件、全程离线</p>
+      <p style="font-size:0.65rem; color:var(--text-dim); margin-bottom:0.1rem;">* 应用提供深色/浅色双主题，截图以深色模式展示</p>
+      <div class="feat">
+        <div class="feat-label"><span></span>自然语言交互</div>
+        <div class="feat-desc">像跟人说话一样管理文件——总结文档、推荐标签、移动文件，一句话搞定</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>RAG 文件上下文</div>
+        <div class="feat-desc">AI 自动读取文件内容，基于真实信息回答问题，而非凭空猜测</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>意图识别与操作执行</div>
+        <div class="feat-desc">AI 理解你的意图后自动执行文件操作，每一步需用户确认后才执行</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">7 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 7: SMART CHAT - DOCUMENT SUMMARY ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual">
+      <img src="只能助手帮忙总结文档.png" alt="文档总结截图" style="width:100%; max-height:380px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-content">
+      <span class="tag tag-emerald">AI Chat</span>
+      <h2>能力一：文档智能总结</h2>
+      <p class="subtitle-sm">AI 读取文件内容，返回结构化摘要</p>
+      <div style="display:flex; flex-direction:column; gap:0.5rem;">
+        <div style="background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.15); border-radius:10px; padding:0.7rem;">
+          <div style="font-size:0.8rem; font-weight:600; color:var(--indigo); margin-bottom:0.3rem;"> 用户指令</div>
+          <div style="font-size:0.9rem; font-weight:500;">"帮我总结这个文档"</div>
+        </div>
+        <div style="background:rgba(129,140,248,0.08); border:1px solid rgba(129,140,248,0.15); border-radius:10px; padding:0.7rem;">
+          <div style="font-size:0.8rem; font-weight:600; color:var(--emerald); margin-bottom:0.3rem;"> AI 响应</div>
+          <div style="font-size:0.8rem; color:var(--text); line-height:1.5;">
+            自动识别文件格式（PDF/DOCX/TXT）→ 提取全文文本 → LLM 分析并生成：<br>
+            <span style="color:var(--text-dim);">• 核心观点：…<br>• 关键数据：…<br>• 结论建议：…</span>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:0.7rem; color:var(--text-dim); margin-top:0.3rem;">
+        支持格式：PDF、DOCX、XLSX、TXT 及常见代码文件
+      </div>
+    </div>
+  </div>
+  <div class="page-number">8 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 8: SMART CHAT - TAGS + FILE OPS ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-emerald">AI Chat</span>
+    <h2 style="margin-top:0.2rem;">能力二：标签推荐 &amp; 文件操作</h2>
+    <p class="subtitle">不止于对话，AI 能理解文件内容并自动执行操作</p>
+    <div style="display:flex; gap:0.7rem; margin-top:0.5rem; flex:1; align-items:center;">
+      <div style="flex:1; height:340px; display:flex; flex-direction:column;">
+        <div style="text-align:center; font-size:0.8rem; font-weight:600; color:var(--amber); flex-shrink:0;"> 智能标签推荐</div>
+        <img src="帮忙给文件加tag.png" alt="标签推荐截图" style="flex:1; width:100%; object-fit:contain; min-height:0; margin:0.3rem 0;" class="img">
+        <div style="font-size:0.7rem; color:var(--text-dim); text-align:center; flex-shrink:0;">
+           "帮我把这个文档加合适的tag" → 推荐：机器学习、论文、2024
+        </div>
+      </div>
+      <div style="flex:1; height:340px; display:flex; flex-direction:column;">
+        <div style="text-align:center; font-size:0.8rem; font-weight:600; color:var(--indigo); flex-shrink:0;"> 文件操作执行</div>
+        <img src="智能助手帮忙移动文件.png" alt="文件操作截图" style="flex:1; width:100%; object-fit:contain; min-height:0; margin:0.3rem 0;" class="img">
+        <div style="font-size:0.7rem; color:var(--text-dim); text-align:center; flex-shrink:0;">
+           "帮我把这个文件移到项目文件夹" → 确认后执行
+        </div>
+      </div>
+    </div>
+    <div style="display:flex; gap:0.4rem; margin-top:0.4rem; justify-content:center;">
+      <span class="tag" style="font-size:0.6rem;">Qwen2.5 GGUF</span>
+      <span class="tag tag-emerald" style="font-size:0.6rem;">RAG 文件上下文</span>
+      <span class="tag tag-amber" style="font-size:0.6rem;">意图识别与执行</span>
+      <span class="tag tag-rose" style="font-size:0.6rem;">用户确认机制</span>
+    </div>
+  </div>
+  <div class="page-number">9 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 9: FILE CLASSIFICATION ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual">
+      <img src="文件分类界面展示.png" alt="文件分类界面" style="width:100%; max-height:350px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-content">
+      <span class="tag tag-amber">Features</span>
+      <h2>智能分类：文件自动归类</h2>
+      <p class="subtitle-sm">无需手动建文件夹，AI 按类型 + 内容双重维度自动组织</p>
+      <div class="feat">
+        <div class="feat-label"><span></span>基于扩展名的基础分类</div>
+        <div class="feat-desc">文档、图片、视频、代码、压缩包……按文件类型自动分入预设类别</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>基于内容语义的深度分类</div>
+        <div class="feat-desc">AI 读取文件内容，按主题归类：学习资料、工作文档、项目文件……</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>可自定义标签</div>
+        <div class="feat-desc">AI 自动推荐标签 + 用户可手动添加/编辑，构建个人分类体系</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">10 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 10: ORGANIZE SUGGESTIONS ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual">
+      <img src="整理建议页面展示.png" alt="整理建议界面" style="width:100%; max-height:350px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-content">
+      <span class="tag tag-amber">Features</span>
+      <h2>整理建议：智能清理与去重</h2>
+      <p class="subtitle-sm">自动检测冗余文件，让 U 盘空间不再浪费</p>
+      <div class="feat">
+        <div class="feat-label"><span></span>重复文件识别</div>
+        <div class="feat-desc">基于 BLAKE3 哈希值精确比对，找出内容完全相同的重复文件——无论文件名是否一致</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>"浪费空间"分析</div>
+        <div class="feat-desc">汇总重复文件占用的总空间，直观展示可释放容量，一键清理</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>安全删除机制</div>
+        <div class="feat-desc">删除前确认 + 保留至少一份副本，防止误删重要文件</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">11 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 11: SECURE SPACE ============================== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-visual">
+      <div style="width:100%; display:flex; flex-direction:column; gap:0.5rem;">
+        <img src="安全空间界面展示.png" alt="安全空间界面" style="width:100%; max-height:280px; object-fit:contain;" class="img">
+        <img src="安全空间放了一个文件.png" alt="安全空间文件" style="width:100%; max-height:280px; object-fit:contain;" class="img">
+      </div>
+    </div>
+    <div class="split-content">
+      <span class="tag tag-rose">Security</span>
+      <h2>安全空间：文件级加密保护</h2>
+      <p class="subtitle-sm">AES-256-GCM + Argon2id，军用级加密</p>
+      <div class="feat">
+        <div class="feat-label"><span></span>加密方式</div>
+        <div class="feat-desc">每个文件独立加密，AES-256-GCM 认证加密算法，密钥由 Argon2id 密码派生函数生成</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>使用流程</div>
+        <div class="feat-desc">设置密码 → 拖入文件自动加密 → 输入密码解密查看 → 拔出 U 盘即安全锁定</div>
+      </div>
+      <div class="feat">
+        <div class="feat-label"><span></span>隐私保障</div>
+        <div class="feat-desc">加密密钥仅存在于内存中，关闭应用或拔出设备后自动清除</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">12 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 12: ARCHITECTURE ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag">Architecture</span>
+    <h2 style="margin-top:0.2rem;">技术架构</h2>
+    <p class="subtitle">轻量、高性能、可移植 — Tauri v2 + Rust + React</p>
+    <div class="arch-row" style="margin-top:0.6rem; height:260px; min-height:0;">
+      <div class="arch-layer" style="height:100%; display:flex; flex-direction:column;">
+        <div class="arch-label" style="color:var(--indigo);">存储层</div>
+        <img src="mermaid存储层.jpg" alt="存储层" style="flex:1; width:100%; object-fit:contain; min-height:0;" class="img">
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-layer" style="height:100%; display:flex; flex-direction:column;">
+        <div class="arch-label" style="color:var(--emerald);">Rust 后端</div>
+        <img src="mermaidRust后端层.jpg" alt="后端层" style="flex:1; width:100%; object-fit:contain; min-height:0;" class="img">
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-layer" style="height:100%; display:flex; flex-direction:column;">
+        <div class="arch-label" style="color:var(--amber);">IPC 桥接</div>
+        <img src="mermaidIPC桥接层.jpg" alt="IPC层" style="flex:1; width:100%; object-fit:contain; min-height:0;" class="img">
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-layer" style="height:100%; display:flex; flex-direction:column;">
+        <div class="arch-label" style="color:var(--rose);">前端</div>
+        <img src="mermaid前端层.jpg" alt="前端层" style="flex:1; width:100%; object-fit:contain; min-height:0;" class="img">
+      </div>
+    </div>
+    <div class="grid3" style="margin-top:0.4rem;">
+      <div class="card" style="padding:0.5rem;">
+        <div class="card-title" style="font-size:0.75rem; color:var(--indigo);">前端 React 19</div>
+        <div class="card-desc" style="font-size:0.65rem;">TypeScript + Tailwind + Zustand + 虚拟滚动</div>
+      </div>
+      <div class="card" style="padding:0.5rem;">
+        <div class="card-title" style="font-size:0.75rem; color:var(--emerald);">桥接 Tauri v2</div>
+        <div class="card-desc" style="font-size:0.65rem;">IPC invoke + Event 事件推送</div>
+      </div>
+      <div class="card" style="padding:0.5rem;">
+        <div class="card-title" style="font-size:0.75rem; color:var(--amber);">后端 Rust</div>
+        <div class="card-desc" style="font-size:0.65rem;">candle / lopdf / calamine / rusqlite</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">13 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 14: OFFLINE AI ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-emerald">Offline AI</span>
+    <h2 style="margin-top:0.2rem;">全离线 AI 架构</h2>
+    <p class="subtitle">所有模型本地运行，无需联网，保护隐私</p>
+    <div style="display:flex; gap:1rem; margin-top:0.6rem; flex:1; align-items:center;">
+      <div style="flex:1.2;">
+        <img src="models文件夹.png" alt="模型文件夹" style="width:100%; max-height:300px; object-fit:contain;" class="img">
+      </div>
+      <div style="flex:1; display:flex; flex-direction:column; gap:0.5rem;">
+        <div class="card" style="padding:0.6rem; border-left: 3px solid var(--indigo);">
+          <div class="card-title" style="font-size:0.8rem; color:var(--indigo);">推理框架：Candle</div>
+          <div class="card-desc" style="font-size:0.7rem;">纯 Rust ML 推理框架，零 Python 依赖，无需 CUDA，CPU 可运行。使用 GGUF 格式量化模型，文件体积小、加载快</div>
+        </div>
+        <div class="card" style="padding:0.6rem; border-left: 3px solid var(--emerald);">
+          <div class="card-title" style="font-size:0.8rem; color:var(--emerald);">Qwen2.5 GGUF 对话模型</div>
+          <div class="card-desc" style="font-size:0.7rem;">国产通义千问 2.5 量化版，Q4_K_M 精度约 700MB。支持流式生成、意图识别、RAG 文件上下文</div>
+        </div>
+        <div class="card" style="padding:0.6rem; border-left: 3px solid var(--amber);">
+          <div class="card-title" style="font-size:0.8rem; color:var(--amber);">BGE-small-zh 嵌入模型</div>
+          <div class="card-desc" style="font-size:0.7rem;">BAAI 中文语义向量模型，512 维输出。支持中英双语，用于语义搜索和分类的特征提取</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">14 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 15: PRIVACY ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-rose">Privacy by Design</span>
+    <h2 style="margin-top:0.2rem;">隐私安全设计原则</h2>
+    <p class="subtitle">用户数据永不离开设备，隐私从架构上保障</p>
+    <div class="grid2" style="margin-top:0.5rem; flex:1; align-content:center;">
+      <div class="card" style="padding:0.7rem;">
+        <div style="font-size:2rem; margin-bottom:0.2rem;"></div>
+        <div class="card-title" style="color:var(--indigo);">零网络请求</div>
+        <div class="card-desc">所有 AI 推理在本地 CPU 完成，没有任何数据上传到云端。即使用于敏感文件也无需担心泄露</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div style="font-size:2rem; margin-bottom:0.2rem;"></div>
+        <div class="card-title" style="color:var(--emerald);">非破坏性架构</div>
+        <div class="card-desc">运行期间仅创建 .semanticdrive 缓存目录存储索引和向量，永不修改用户的原始文件</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div style="font-size:2rem; margin-bottom:0.2rem;"></div>
+        <div class="card-title" style="color:var(--amber);">即拔即走</div>
+        <div class="card-desc">所有数据和应用都在 U 盘上，拔出后电脑不留任何痕迹。真正即插即用、即拔即走</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div style="font-size:2rem; margin-bottom:0.2rem;"></div>
+        <div class="card-title" style="color:var(--rose);;">AES-256-GCM 加密</div>
+        <div class="card-desc">安全空间采用认证加密算法，Argon2id 抗 GPU 暴力破解，密钥仅存于内存</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">15 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 16: PERFORMANCE ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-emerald">Performance</span>
+    <h2 style="margin-top:0.2rem;">性能优化实践</h2>
+    <p class="subtitle">让 AI 应用在移动设备上流畅运行</p>
+    <div class="grid2" style="margin-top:0.5rem; flex:1; align-content:center;">
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem; color:var(--indigo);">FTS5 全文搜索</div>
+        <div class="card-desc" style="font-size:0.75rem;">SQLite FTS5 引擎替代 O(N) 字符串扫描，关键词搜索从秒级降至毫秒级</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem; color:var(--emerald);">增量扫描</div>
+        <div class="card-desc" style="font-size:0.75rem;">基于文件修改时间的增量更新，首次全量扫描后仅处理变更文件，二次启动近乎瞬时</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem; color:var(--amber);">分阶段评分</div>
+        <div class="card-desc" style="font-size:0.75rem;">先关键词预过滤缩小候选集，再向量精排，计算量减少 80%+</div>
+      </div>
+      <div class="card" style="padding:0.7rem;">
+        <div class="card-title" style="font-size:0.85rem; color:var(--rose);">虚拟滚动</div>
+        <div class="card-desc" style="font-size:0.75rem;">万级文件列表流畅渲染，DOM 节点数控制在可视区范围，滚动无卡顿</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">16 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 17: RESPONSE TIME COMPARISON ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center; max-width:680px; margin:0 auto; width:100%;">
+    <span class="tag tag-emerald">Performance</span>
+    <h2 style="margin-top:0.2rem;">搜索响应时间对比</h2>
+    <p class="subtitle">从原型到产品级优化的性能飞跃</p>
+    <div style="background:var(--bg-card); border:1px solid var(--border); border-radius:12px; padding:1.5rem 2rem; margin-top:0.5rem;">
+      <div style="font-size:0.9rem; font-weight:600; margin-bottom:1rem; text-align:center;">搜索延迟对比（1,000 文件规模）</div>
+      <div class="bar-chart" style="gap:0.7rem;">
+        <div class="bar-row">
+          <span class="label" style="width:4.5rem;">优化前</span>
+          <div class="bar" style="width:85%; height:1.6rem;"></div>
+          <span class="value" style="font-size:0.8rem;">~3-5 秒</span>
+        </div>
+        <div class="bar-row">
+          <span class="label" style="width:4.5rem;">优化后</span>
+          <div class="bar bar-after" style="width:15%; height:1.6rem;"></div>
+          <span class="value" style="font-size:0.8rem;">~0.1-0.3 秒</span>
+        </div>
+      </div>
+      <p style="font-size:0.7rem; color:var(--text-dim); text-align:center; margin-top:0.6rem;">优化后搜索延迟降低 95% 以上，从秒级降至毫秒级</p>
+    </div>
+    <div class="grid3" style="margin-top:0.6rem;">
+      <div class="card" style="padding:0.6rem; text-align:center;">
+        <div class="card-title" style="font-size:0.75rem; color:var(--indigo);">FTS5 全文索引</div>
+        <div class="card-desc" style="font-size:0.65rem;">SQLite FTS5 替代线性扫描，关键词搜索 O(1) 响应</div>
+      </div>
+      <div class="card" style="padding:0.6rem; text-align:center;">
+        <div class="card-title" style="font-size:0.75rem; color:var(--emerald);">分阶段评分</div>
+        <div class="card-desc" style="font-size:0.65rem;">关键词预过滤缩小候选集 → 向量精排，计算量 -80%</div>
+      </div>
+      <div class="card" style="padding:0.6rem; text-align:center;">
+        <div class="card-title" style="font-size:0.75rem; color:var(--amber);">增量扫描</div>
+        <div class="card-desc" style="font-size:0.65rem;">仅处理变更文件，二次启动近乎瞬时</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">17 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 18: APPLICATION SCENARIOS ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-amber">Scenarios</span>
+    <h2 style="margin-top:0.2rem;">应用场景</h2>
+    <p class="subtitle">解决真实世界中实实在在的问题</p>
+    <div style="display:flex; gap:0.7rem; margin-top:0.5rem; flex:1; align-items:center;">
+      <div class="card" style="flex:1; height:280px; display:flex; flex-direction:column; padding:0.8rem;">
+        <div style="font-size:0.9rem; font-weight:600; color:var(--indigo);">学生学习</div>
+        <div style="flex:1; display:flex; align-items:center; justify-content:center; min-height:0;">
+          <img src="电脑办公.png" alt="学生学习场景" style="max-width:100%; max-height:135px; object-fit:contain;" class="img">
+        </div>
+        <div style="font-size:0.7rem; color:var(--text-dim); line-height:1.4;">课件、论文、资料杂乱无章？一句话搜索找到任何资料，AI 自动按科目分类，复习效率翻倍</div>
+      </div>
+      <div class="card" style="flex:1; height:280px; display:flex; flex-direction:column; padding:0.8rem;">
+        <div style="font-size:0.9rem; font-weight:600; color:var(--emerald);">办公室办公</div>
+        <div style="flex:1; display:flex; align-items:center; justify-content:center; min-height:0;">
+          <img src="办公室示意图.png" alt="办公场景" style="max-width:100%; max-height:135px; object-fit:contain;" class="img">
+        </div>
+        <div style="font-size:0.7rem; color:var(--text-dim); line-height:1.4;">出差携带 U 盘，插入任何 Windows 电脑即用，无需安装配置。敏感文件不上云，隐私零风险</div>
+      </div>
+      <div class="card" style="flex:1; height:280px; display:flex; flex-direction:column; padding:0.8rem;">
+        <div style="font-size:0.9rem; font-weight:600; color:var(--amber);">U 盘预装部署</div>
+        <div style="flex:1; display:flex; align-items:center; justify-content:center; min-height:0;">
+          <img src="一个U盘.png" alt="U盘预装" style="max-width:100%; max-height:135px; object-fit:contain;" class="img">
+        </div>
+        <div style="font-size:0.7rem; color:var(--text-dim); line-height:1.4;">企业/学校批量预装，分发即用。零部署成本、零维护要求，IT 部门无需额外支持</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-number">18 / 19</div>
+</section>
+
+<!-- ============================== SLIDE 19: SUMMARY & FUTURE ============================== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag">Summary</span>
+    <h2 style="margin-top:0.2rem;">总结与未来优化方向</h2>
+    <p class="subtitle">从 MVP 到产品化的持续演进</p>
+    <div class="roadmap" style="margin-top:0.5rem;">
+      <div class="roadmap-col">
+        <h4 style="color:var(--emerald);">已完成</h4>
+        <ul>
+          <li>语义搜索 + 混合排序</li>
+          <li>文件自动分类</li>
+          <li>AI 智能聊天 + 文件操作</li>
+          <li>安全加密空间</li>
+          <li>增量扫描 + FTS5 优化</li>
+        </ul>
+      </div>
+      <div class="roadmap-col">
+        <h4 style="color:var(--amber);">进行中</h4>
+        <ul>
+          <li>多模态文件预览</li>
+          <li>批量操作优化</li>
+          <li>插件系统开发</li>
+        </ul>
+      </div>
+      <div class="roadmap-col">
+        <h4 style="color:var(--indigo);">未来规划</h4>
+        <ul>
+          <li>AI 模型热更新</li>
+          <li>企业级部署方案</li>
+          <li>移动端适配</li>
+        </ul>
+      </div>
+      <div class="roadmap-col">
+        <h4 style="color:var(--rose);">商业化</h4>
+        <ul>
+          <li>U 盘预装免费版</li>
+          <li>专业版授权收费</li>
+          <li>开放插件生态</li>
+        </ul>
+      </div>
+    </div>
+    <div style="margin-top:0.5rem; text-align:center;">
+      <p style="font-size:0.85rem; color:var(--text-dim);">产品创新赛道 — AI + 移动存储</p>
+      <p style="font-size:0.75rem; color:var(--text-dim); margin-top:0.15rem;">感谢各位评委老师的时间与宝贵意见</p>
+    </div>
+  </div>
+  <div class="page-number">19 / 19</div>
+</section>
+
+</body>
+</html>

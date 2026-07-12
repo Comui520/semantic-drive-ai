@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Semantic Drive AI — 复赛展示</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #f6f8fa;
+    --bg-card: #ffffff;
+    --border: #e2e6ec;
+    --text: #1a2236;
+    --text-dim: #68748c;
+    --accent: #4f6ef6;
+    --emerald: #0ea882;
+    --amber: #d97706;
+    --rose: #e04a6e;
+  }
+
+  body {
+    font-family: 'Noto Sans SC', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.4;
+  }
+
+  .slide {
+    width: 100%;
+    max-width: 1280px;
+    min-height: 100vh;
+    margin: 0 auto;
+    padding: 48px 64px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    position: relative;
+    page-break-after: always;
+    border-bottom: 1px solid var(--border);
+  }
+  .slide:last-child { border-bottom: none; }
+
+  @media print {
+    body { background: #f6f8fa; }
+    .slide { min-height: 100vh; max-width: 100%; padding: 36px 48px; border: none; }
+    .pn { display: none; }
+  }
+
+  /* Typography */
+  h1 { font-size: 3.2rem; font-weight: 900; letter-spacing: -0.02em; line-height: 1.15; }
+  h2 { font-size: 2.4rem; font-weight: 700; line-height: 1.2; }
+  .sub { font-size: 1.2rem; color: var(--text-dim); font-weight: 400; margin-top: 0.4rem; }
+  .grad-text {
+    background: linear-gradient(135deg, var(--accent), var(--emerald));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .pn {
+    position: absolute; bottom: 20px; right: 64px;
+    font-size: 0.8rem; color: #c4cad6; font-weight: 400;
+  }
+
+  /* Tags */
+  .tag {
+    display: inline-block;
+    padding: 0.25rem 0.8rem;
+    border-radius: 100px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    background: rgba(79,110,246,0.08);
+    color: var(--accent);
+    border: 1.5px solid rgba(79,110,246,0.2);
+  }
+  .tag-em { background: rgba(14,168,130,0.08); color: var(--emerald); border-color: rgba(14,168,130,0.2); }
+  .tag-am { background: rgba(217,119,6,0.08); color: var(--amber); border-color: rgba(217,119,6,0.2); }
+  .tag-ro { background: rgba(224,74,110,0.08); color: var(--rose); border-color: rgba(224,74,110,0.2); }
+
+  /* Tech tag row */
+  .tech-row { display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+  .tech-tag {
+    font-size: 0.7rem; padding: 0.2rem 0.55rem; border-radius: 6px;
+    background: #eef1f7; color: var(--text-dim); font-weight: 500;
+    border: 1px solid #e2e6ec;
+  }
+
+  /* Images */
+  .img {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    display: block;
+    box-shadow: 0 2px 16px rgba(0,0,0,0.06);
+  }
+
+  /* Split layout */
+  .split { display: flex; gap: 2rem; flex: 1; min-height: 0; align-items: center; }
+  .split-v { flex: 1.5; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  .split-c { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 0.5rem; min-height: 0; }
+
+  /* Cards */
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.2rem;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+  }
+  .card-title { font-weight: 700; font-size: 1rem; margin-bottom: 0.3rem; }
+  .card-desc { font-size: 0.9rem; color: var(--text-dim); line-height: 1.45; }
+
+  /* Feature list on split */
+  .feat { margin-bottom: 0.3rem; }
+  .feat-t { font-size: 0.95rem; font-weight: 600; color: var(--text); }
+  .feat-d { font-size: 0.85rem; color: var(--text-dim); line-height: 1.4; }
+
+  /* Architecture */
+  .arch { display: flex; gap: 0.6rem; align-items: center; justify-content: center; }
+  .arch-box {
+    flex: 1; max-width: 200px;
+    background: var(--bg-card); border: 2px solid var(--border);
+    border-radius: 12px; padding: 0.8rem; text-align: center;
+  }
+  .arch-box .n { font-size: 0.85rem; font-weight: 700; margin-bottom: 0.15rem; }
+  .arch-box .d { font-size: 0.7rem; color: var(--text-dim); }
+  .arch-arrow { font-size: 1.5rem; color: var(--text-dim); flex-shrink: 0; font-weight: 300; }
+
+  /* Scenario cards */
+  .scene-card { display: flex; flex-direction: column; gap: 0.5rem; padding: 1rem; }
+  .scene-card img { max-width: 100%; max-height: 180px; object-fit: contain; }
+  .scene-card .sc-t { font-size: 1rem; font-weight: 700; }
+  .scene-card .sc-d { font-size: 0.85rem; color: var(--text-dim); line-height: 1.4; }
+
+  .mt-1 { margin-top: 0.6rem; }
+  .text-center { text-align: center; }
+</style>
+</head>
+<body>
+
+<!-- ====== SLIDE 1: COVER ====== -->
+<section class="slide" style="text-align:center;">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:0.5rem;">
+    <span class="tag" style="font-size:0.8rem; padding:0.3rem 1rem;">产品创新赛道 — AI + 移动存储</span>
+    <h1 style="font-size:3.8rem;"><span class="grad-text">Semantic Drive AI</span></h1>
+    <p style="font-size:1.5rem; font-weight:400; color:var(--text-dim);">语义智能文件管家</p>
+    <p style="font-size:1.2rem; font-weight:500; color:var(--text); margin-top:0.6rem;">
+      你的 U 盘里，住着一个 AI 管家
+    </p>
+  </div>
+  <div class="pn">1 / 12</div>
+</section>
+
+<!-- ====== SLIDE 2: PLUG & PLAY ====== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-v">
+      <img src="slide2.png" alt="主界面" style="width:100%; max-height:420px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-c">
+      <span class="tag">即插即用</span>
+      <h2 style="font-size:2.2rem;">双击运行，<br>无需安装</h2>
+      <p class="sub">基于 Tauri v2 打包，单文件便携启动。<br>U 盘插入任何 Windows 电脑即可使用。</p>
+      <div class="tech-row">
+        <span class="tech-tag">Tauri v2</span>
+        <span class="tech-tag">Rust 后端</span>
+        <span class="tech-tag">React 19</span>
+        <span class="tech-tag">即插即用</span>
+      </div>
+    </div>
+  </div>
+  <div class="pn">2 / 12</div>
+</section>
+
+<!-- ====== SLIDE 3: SEMANTIC SEARCH ====== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-v">
+      <img src="智能搜索上个月的ppt文件展示.png" alt="搜索结果" style="width:100%; max-height:420px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-c">
+      <span class="tag">语义搜索</span>
+      <h2 style="font-size:2.2rem;">"上个月的PPT"</h2>
+      <p class="sub">AI 理解语义，不是匹配文件名。<br>即使文件名叫 "final-v3"，也能被找到。</p>
+      <div class="tech-row">
+        <span class="tech-tag">BGE Embedding</span>
+        <span class="tech-tag">512维向量</span>
+        <span class="tech-tag">FTS5 混合评分</span>
+        <span class="tech-tag">余弦相似度</span>
+      </div>
+    </div>
+  </div>
+  <div class="pn">3 / 12</div>
+</section>
+
+<!-- ====== SLIDE 4: AI CHAT ====== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-v">
+      <img src="slide4.png" alt="AI聊天" style="width:100%; max-height:420px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-c">
+      <span class="tag tag-em">AI 对话</span>
+      <h2 style="font-size:2.2rem;">像聊天一样<br>管理文件</h2>
+      <p class="sub">总结文档、推荐标签、移动文件——<br>用一句话告诉 AI，它帮你操作。</p>
+      <div class="tech-row">
+        <span class="tech-tag">Qwen2.5 本地模型</span>
+        <span class="tech-tag">RAG 文件上下文</span>
+        <span class="tech-tag">意图识别</span>
+        <span class="tech-tag">确认后执行</span>
+      </div>
+    </div>
+  </div>
+  <div class="pn">4 / 12</div>
+</section>
+
+<!-- ====== SLIDE 5: AI CAPABILITIES - TAG & FILE OPS ====== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-em">AI 对话</span>
+    <h2 style="margin-top:0.3rem;">AI 的两种核心能力</h2>
+    <p class="sub" style="margin-bottom:0.6rem;">不止对话——标签推荐与文件操作，确认后自动执行</p>
+    <div style="display:flex; gap:1rem; flex:1; min-height:0; align-items:center;">
+      <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:0.4rem;">
+        <img src="帮忙给文件加tag.png" alt="标签推荐" style="width:100%; max-height:340px; object-fit:contain;" class="img">
+        <div style="font-size:0.9rem; font-weight:600; color:var(--accent);">标签推荐</div>
+        <div style="font-size:0.8rem; color:var(--text-dim);">"帮我把这个文档加合适的tag"</div>
+      </div>
+      <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:0.4rem;">
+        <img src="智能助手帮忙移动文件.png" alt="文件操作" style="width:100%; max-height:340px; object-fit:contain;" class="img">
+        <div style="font-size:0.9rem; font-weight:600; color:var(--emerald);">文件操作</div>
+        <div style="font-size:0.8rem; color:var(--text-dim);">"帮我把这个文件移到项目文件夹"</div>
+      </div>
+    </div>
+  </div>
+  <div class="pn">5 / 12</div>
+</section>
+
+<!-- ====== SLIDE 6: CLASSIFY + DEDUP ====== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-v">
+      <img src="文件分类界面展示.png" alt="文件分类" style="width:100%; max-height:420px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-c">
+      <span class="tag tag-am">智能整理</span>
+      <h2 style="font-size:2.2rem;">自动分类，<br>智能去重</h2>
+      <p class="sub">AI 按类型 + 内容语义自动归类。<br>BLAKE3 哈希精准识别重复文件。</p>
+      <div class="tech-row">
+        <span class="tech-tag">BLAKE3 哈希</span>
+        <span class="tech-tag">语义锚定类别</span>
+        <span class="tech-tag">批量处理</span>
+      </div>
+    </div>
+  </div>
+  <div class="pn">6 / 12</div>
+</section>
+
+<!-- ====== SLIDE 7: SECURE SPACE ====== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-v">
+      <img src="slide6.png" alt="安全空间" style="width:100%; max-height:420px; object-fit:contain;" class="img">
+    </div>
+    <div class="split-c">
+      <span class="tag tag-ro">安全空间</span>
+      <h2 style="font-size:2.2rem;">AES-256-GCM<br>加密保护</h2>
+      <p class="sub">拖入文件即加密，拔出 U 盘即锁定。<br>密钥仅存于内存，永不落盘。</p>
+      <div class="tech-row">
+        <span class="tech-tag">AES-256-GCM</span>
+        <span class="tech-tag">Argon2id 密钥派生</span>
+        <span class="tech-tag">内存态密钥</span>
+      </div>
+    </div>
+  </div>
+  <div class="pn">7 / 12</div>
+</section>
+
+<!-- ====== SLIDE 8: TECH FOUNDATION ====== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag">技术底座</span>
+    <h2 style="margin-top:0.3rem;">100% 本地运行，无需联网</h2>
+    <p class="sub" style="margin-bottom:0.8rem;">所有 AI 模型本地部署在 U 盘上，推理全在 CPU 完成</p>
+
+    <!-- Architecture -->
+    <div class="arch">
+      <div class="arch-box" style="border-color:rgba(79,110,246,0.3);">
+        <div class="n" style="color:var(--accent);">存储层</div>
+        <div class="d">SQLite · FTS5 · BLAKE3</div>
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-box" style="border-color:rgba(14,168,130,0.3);">
+        <div class="n" style="color:var(--emerald);">Rust 后端</div>
+        <div class="d">扫描 · AI · 搜索 · 加密</div>
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-box" style="border-color:rgba(217,119,6,0.3);">
+        <div class="n" style="color:var(--amber);">IPC 桥接</div>
+        <div class="d">Tauri v2 invoke · Event</div>
+      </div>
+      <div class="arch-arrow">→</div>
+      <div class="arch-box" style="border-color:rgba(224,74,110,0.3);">
+        <div class="n" style="color:var(--rose);">前端</div>
+        <div class="d">React 19 · Tailwind · Zustand</div>
+      </div>
+    </div>
+
+    <!-- Model cards -->
+    <div class="grid2" style="margin-top:1rem;">
+      <div class="card" style="display:flex;align-items:center;gap:1rem;padding:1rem;">
+        <div style="font-size:2rem;flex-shrink:0;">&#x1F9E0;</div>
+        <div>
+          <div class="card-title" style="color:var(--accent);">Candle 推理框架</div>
+          <div class="card-desc">纯 Rust ML 框架，零 Python 依赖，CPU 即可运行 GGUF 量化模型</div>
+        </div>
+      </div>
+      <div class="card" style="display:flex;align-items:center;gap:1rem;padding:1rem;">
+        <div style="font-size:2rem;flex-shrink:0;">&#x1F4DA;</div>
+        <div>
+          <div class="card-title" style="color:var(--emerald);">双模型协作</div>
+          <div class="card-desc">Qwen2.5 (对话+RAG) + BGE-small-zh (语义向量)，合计约 1GB</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="pn">8 / 12</div>
+</section>
+
+<!-- ====== SLIDE 8: PRIVACY ====== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-ro">隐私安全</span>
+    <h2 style="margin-top:0.3rem;">你的数据，永不离开 U 盘</h2>
+    <p class="sub" style="margin-bottom:0.8rem;">隐私不是口号，而是从架构层面保障的设计原则</p>
+
+    <div class="grid2" style="flex:1; align-content:center;">
+      <div class="card" style="padding:1.5rem;">
+        <div style="font-size:2.4rem;margin-bottom:0.3rem;">&#x1F6AB;</div>
+        <div class="card-title" style="font-size:1.1rem;color:var(--accent);">零网络请求</div>
+        <div class="card-desc" style="font-size:0.95rem;">所有 AI 推理在本地 CPU 完成，<br>无需联网，数据绝不离开设备</div>
+      </div>
+      <div class="card" style="padding:1.5rem;">
+        <div style="font-size:2.4rem;margin-bottom:0.3rem;">&#x1F6E1;&#xFE0F;</div>
+        <div class="card-title" style="font-size:1.1rem;color:var(--emerald);">非破坏性架构</div>
+        <div class="card-desc" style="font-size:0.95rem;">仅创建 .semanticdrive 缓存目录，<br>永不修改用户的原始文件</div>
+      </div>
+      <div class="card" style="padding:1.5rem;">
+        <div style="font-size:2.4rem;margin-bottom:0.3rem;">&#x1F4A8;</div>
+        <div class="card-title" style="font-size:1.1rem;color:var(--amber);">即插即用，即拔即走</div>
+        <div class="card-desc" style="font-size:0.95rem;">应用和数据全在 U 盘上，<br>拔出后电脑不留任何痕迹</div>
+      </div>
+      <div class="card" style="padding:1.5rem;">
+        <div style="font-size:2.4rem;margin-bottom:0.3rem;">&#x1F510;</div>
+        <div class="card-title" style="font-size:1.1rem;color:var(--rose);">AES-256-GCM 加密</div>
+        <div class="card-desc" style="font-size:0.95rem;">每个文件独立加密，<br>Argon2id 抗 GPU 暴力破解</div>
+      </div>
+    </div>
+  </div>
+  <div class="pn">9 / 12</div>
+</section>
+
+<!-- ====== SLIDE 9: LATEST UPGRADES ====== -->
+<section class="slide">
+  <div class="split">
+    <div class="split-v" style="flex:1.8;">
+      <div style="display:flex; gap:0.6rem; align-items:center;">
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:0.3rem;">
+          <img src="引导1.png" alt="步骤1" style="width:100%; max-height:320px; object-fit:contain;" class="img">
+          <span style="font-size:0.75rem; color:var(--text-dim); font-weight:600;">智能搜索</span>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:0.3rem;">
+          <img src="引导2.png" alt="步骤2" style="width:100%; max-height:320px; object-fit:contain;" class="img">
+          <span style="font-size:0.75rem; color:var(--text-dim); font-weight:600;">AI 助手</span>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; align-items:center; gap:0.3rem;">
+          <img src="引导3.png" alt="步骤3" style="width:100%; max-height:320px; object-fit:contain;" class="img">
+          <span style="font-size:0.75rem; color:var(--text-dim); font-weight:600;">安全空间</span>
+        </div>
+      </div>
+    </div>
+    <div class="split-c" style="flex:1;">
+      <span class="tag tag-em">最新升级</span>
+      <h2 style="font-size:2.2rem;">首次使用引导<br>+ 加密空间优化</h2>
+      <p class="sub">新用户 3 步快速上手。<br>加密空间仅接受设备内文件，更安全的隔离保障。</p>
+      <div class="tech-row">
+        <span class="tech-tag">欢迎引导</span>
+        <span class="tech-tag">加密空间路径限制</span>
+      </div>
+    </div>
+  </div>
+  <div class="pn">10 / 12</div>
+</section>
+
+<!-- ====== SLIDE 10: SCENARIOS ====== -->
+<section class="slide">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center;">
+    <span class="tag tag-am">应用场景</span>
+    <h2 style="margin-top:0.3rem;">解决真实世界中实实在在的问题</h2>
+    <p class="sub" style="margin-bottom:0.8rem;">从学生到白领，从个人到企业，AI 文件管理无处不在</p>
+
+    <div class="grid3">
+      <div class="card scene-card">
+        <img src="电脑办公.png" alt="学生" style="max-height:160px;">
+        <div class="sc-t" style="color:var(--accent);">学生学习</div>
+        <div class="sc-d">课件论文资料杂乱无章？一句话搜到任何资料，AI 自动按科目分类，复习效率翻倍</div>
+      </div>
+      <div class="card scene-card">
+        <img src="办公室示意图.png" alt="办公" style="max-height:160px;">
+        <div class="sc-t" style="color:var(--emerald);">办公室办公</div>
+        <div class="sc-d">出差携带 U 盘，插入即用无需安装。敏感文件不上云，隐私零风险</div>
+      </div>
+      <div class="card scene-card">
+        <img src="一个U盘.png" alt="U盘预装" style="max-height:160px;">
+        <div class="sc-t" style="color:var(--amber);">U 盘预装部署</div>
+        <div class="sc-d">企业/学校批量预装，分发即用。零部署成本、零维护要求</div>
+      </div>
+    </div>
+  </div>
+  <div class="pn">11 / 12</div>
+</section>
+
+<!-- ====== SLIDE 11: CLOSING ====== -->
+<section class="slide" style="text-align:center;">
+  <div style="flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:0.6rem;">
+    <h1 style="font-size:3rem; max-width:700px;">
+      让文件管理，<br>从<span class="grad-text">繁琐</span>变成<span class="grad-text">对话</span>
+    </h1>
+    <p style="font-size:1.2rem; color:var(--text-dim); margin-top:1.5rem;">
+      Semantic Drive AI — 语义智能文件管家
+    </p>
+    <p style="font-size:0.95rem; color:#a0a8b8; margin-top:0.3rem;">
+      产品创新赛道 — AI + 移动存储
+    </p>
+    <p style="font-size:0.95rem; color:#a0a8b8; margin-top:0.5rem;">
+      感谢各位评委老师的时间与宝贵意见
+    </p>
+  </div>
+  <div class="pn">12 / 12</div>
+</section>
+
+</body>
+</html>

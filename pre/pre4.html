@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, height=1080">
+<title>Semantic Drive AI — 决赛答辩</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap');
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  :root{
+    --navy:#0f172a;--navy-light:#1e293b;--blue:#2563eb;--blue-light:#3b82f6;
+    --cyan:#0891b2;--emerald:#059669;--red:#dc2626;--amber:#d97706;
+    --white:#fff;--s50:#f8fafc;--s100:#f1f5f9;--s200:#e2e8f0;--s300:#cbd5e1;
+    --s400:#94a3b8;--s500:#64748b;--s600:#475569;--s700:#334155;--s800:#1e293b;
+  }
+  body{font-family:'Inter','Noto Sans SC',-apple-system,sans-serif;background:var(--s200);color:var(--s800);line-height:1.6;-webkit-font-smoothing:antialiased}
+  .slide{width:1920px;height:1080px;margin:40px auto;background:var(--white);position:relative;overflow:hidden;page-break-after:always;box-shadow:0 25px 80px rgba(0,0,0,0.15)}
+  .t-hero{font-size:4.2rem;font-weight:900;line-height:1.1;letter-spacing:-0.03em}
+  .t-title{font-size:3rem;font-weight:800;line-height:1.15;letter-spacing:-0.02em}
+  .t-sub{font-size:1.5rem;font-weight:500;color:var(--s500);line-height:1.5}
+  .t-body{font-size:1.15rem;line-height:1.7;color:var(--s600)}
+  .t-label{font-size:0.85rem;font-weight:600;text-transform:uppercase;letter-spacing:0.12em;color:var(--blue)}
+  .t-stat{font-size:3.5rem;font-weight:900;line-height:1;letter-spacing:-0.02em}
+  .t-stat-sm{font-size:2.2rem;font-weight:800;line-height:1}
+  .flex-center{display:flex;align-items:center;justify-content:center}
+  .flex-col{display:flex;flex-direction:column}
+  .gap-4{gap:1rem}.gap-5{gap:1.25rem}.gap-6{gap:1.5rem}.gap-8{gap:2rem}.gap-10{gap:2.5rem}
+  .px-16{padding-left:5rem;padding-right:5rem}
+  .px-12{padding-left:3rem;padding-right:3rem}
+  .card{background:var(--white);border:1px solid var(--s200);border-radius:1.25rem;padding:2rem}
+  .card-dark{background:var(--navy);color:var(--white);border:none}
+  .card-blue{background:linear-gradient(135deg,var(--blue),#1d4ed8);color:var(--white);border:none}
+  .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:2rem}
+  .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.5rem}
+  .grid-4{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:1.5rem}
+  .img-card{width:100%;height:100%;object-fit:contain;border-radius:0.85rem}
+  .img-frame{border:1px solid var(--s200);border-radius:1rem;overflow:hidden;background:var(--s50);display:flex;align-items:center;justify-content:center}
+  .page-num{position:absolute;bottom:2rem;right:3rem;font-size:0.8rem;font-weight:500;color:var(--s400);letter-spacing:0.05em}
+  .bg-navy{background:var(--navy);color:var(--white)}
+  .bg-slate{background:var(--s50)}
+  .bg-gradient{background:linear-gradient(160deg,#eff6ff 0%,#f0fdf4 50%,#f8fafc 100%)}
+  .accent-bar{width:60px;height:5px;background:var(--blue);border-radius:3px}
+  .divider{width:100%;height:1px;background:var(--s200)}
+  .stat-box{text-align:center;padding:1.5rem}
+  .stat-box .num{font-size:3rem;font-weight:900;color:var(--blue);line-height:1}
+  .stat-box .label{font-size:0.9rem;color:var(--s500);margin-top:0.5rem}
+
+  /* Risk colors */
+  .risk-high{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}
+  .risk-med{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+  .risk-low{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534}
+
+  /* Agent grid */
+  .agent-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem}
+  .agent-chip{padding:0.6rem 1rem;border-radius:0.6rem;font-size:0.8rem;font-weight:600;text-align:center;white-space:nowrap}
+
+  /* Timeline */
+  .timeline{display:flex;gap:0;position:relative}
+  .timeline::before{content:'';position:absolute;top:24px;left:40px;right:40px;height:3px;background:var(--s200);border-radius:2px}
+  .timeline-item{flex:1;text-align:center;position:relative;padding-top:3rem}
+  .timeline-item::before{content:'';position:absolute;top:16px;left:50%;transform:translateX(-50%);width:18px;height:18px;border-radius:50%;background:var(--blue);border:3px solid var(--white);box-shadow:0 0 0 3px var(--blue)}
+  .timeline-item .year{font-weight:800;font-size:1.3rem;color:var(--navy)}
+  .timeline-item .desc{font-size:0.85rem;color:var(--s500);margin-top:0.3rem}
+
+  .cmp-table{width:100%;border-collapse:collapse;font-size:0.95rem}
+  .cmp-table th{text-align:left;padding:0.75rem 1rem;background:var(--navy);color:white;font-weight:600;font-size:0.85rem}
+  .cmp-table td{padding:0.75rem 1rem;border-bottom:1px solid var(--s200)}
+  .cmp-table tr:nth-child(even) td{background:var(--s50)}
+  .cmp-table .chk{color:var(--emerald);font-weight:700}
+  .cmp-table .crs{color:var(--s400)}
+
+  @media print{
+    body{background:white}
+    .slide{margin:0;box-shadow:none;page-break-after:always;width:100%;height:auto;aspect-ratio:16/9}
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ 1: COVER ═══ -->
+<div class="slide bg-navy flex-center" style="flex-direction:column;text-align:center">
+  <div style="position:absolute;top:0;left:0;right:0;height:6px;background:linear-gradient(90deg,var(--blue),var(--cyan),var(--emerald))"></div>
+  <div style="max-width:1050px">
+    <div style="margin-bottom:2rem">
+      <img src="../semantic-drive-ai/src-tauri/icons/icon.ico" style="width:80px;height:80px;border-radius:18px" alt="icon">
+    </div>
+    <div class="t-label" style="color:var(--s400);margin-bottom:1.5rem">AI + 移动存储 · 产品创新赛道</div>
+    <h1 class="t-hero" style="font-size:5rem;margin-bottom:1.5rem">
+      <span style="color:var(--blue-light)">AI Agent</span><br>语义智能文件管家
+    </h1>
+    <p class="t-sub" style="color:var(--s400);font-size:1.6rem;margin-bottom:3rem">
+      不只是聊天。你的 U 盘里，住着一个能<strong style="color:var(--blue-light)">执行操作</strong>的 AI Agent
+    </p>
+    <div style="display:flex;gap:2.5rem;justify-content:center">
+      <div class="stat-box"><div class="num" style="color:var(--blue-light)">15</div><div class="label" style="color:var(--s400)">种可执行操作</div></div>
+      <div class="stat-box"><div class="num" style="color:var(--cyan)">0</div><div class="label" style="color:var(--s400)">网络请求</div></div>
+      <div class="stat-box"><div class="num" style="color:var(--emerald)">100%</div><div class="label" style="color:var(--s400)">数据不离U盘</div></div>
+    </div>
+  </div>
+  <div class="page-num" style="color:var(--s500)">1 / 14</div>
+</div>
+
+<!-- ═══ 2: PROBLEM ═══ -->
+<div class="slide flex-center px-16" style="gap:4rem">
+  <div style="flex:1;max-width:600px">
+    <div class="t-label" style="margin-bottom:1rem">痛点分析</div>
+    <h2 class="t-title" style="margin-bottom:2rem">U 盘能装，<br>但你找不到</h2>
+    <div class="flex-col gap-6">
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="width:40px;height:40px;background:#fef2f2;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#dc2626">1</div>
+        <div><strong style="color:var(--s800)">搜"上个月PPT"→ 找不到</strong><br><span class="t-body">文件名叫 final-v3.pptx，系统不懂语义</span></div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="width:40px;height:40px;background:#fef2f2;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#dc2626">2</div>
+        <div><strong style="color:var(--s800)">几百文件堆一起</strong><br><span class="t-body">手动整理费时，分类去重全得人工</span></div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:flex-start">
+        <div style="width:40px;height:40px;background:#fef2f2;border-radius:10px;flex-shrink:0;display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#dc2626">3</div>
+        <div><strong style="color:var(--s800)">不敢上云</strong><br><span class="t-body">敏感文件怕泄露，U 盘插别人电脑不能装软件</span></div>
+      </div>
+    </div>
+  </div>
+  <div style="flex:1;display:flex;justify-content:center">
+    <div class="img-frame" style="width:100%;max-width:580px;height:480px">
+      <img src="混乱没法分类的大量文件.png" alt="混乱没法分类的大量文件" class="img-card">
+    </div>
+  </div>
+  <div class="page-num">2 / 14</div>
+</div>
+
+<!-- ═══ 3: AI AGENT POSITIONING ═══ -->
+<div class="slide bg-navy flex-center" style="flex-direction:column;text-align:center">
+  <div class="t-label" style="color:var(--s400);margin-bottom:1.5rem">产品定位</div>
+  <h2 class="t-title" style="color:white;max-width:1100px;margin-bottom:2.5rem">
+    不是聊天机器人，是<br><span style="color:var(--blue-light)">能操作文件的 AI Agent</span>
+  </h2>
+  <div style="display:flex;align-items:center;gap:2rem;width:100%;max-width:1600px;padding:0 2rem">
+    <!-- Left: 普通 AI -->
+    <div style="flex:0 0 280px;background:rgba(255,255,255,0.04);border-radius:1.25rem;padding:2rem;border:1px solid rgba(255,255,255,0.08);text-align:center">
+      <div style="font-size:1rem;font-weight:700;color:var(--s400);margin-bottom:0.8rem;letter-spacing:0.05em">CHAT</div>
+      <h3 style="color:var(--s400);font-size:1.2rem;margin-bottom:0.8rem">普通 AI 聊天</h3>
+      <div class="flex-col gap-2" style="color:var(--s500);font-size:0.9rem">
+        <div>"文件讲了什么？"</div>
+        <div>→ AI 回答文本</div>
+        <div>→ 用户自己动手</div>
+        <div style="margin-top:0.5rem;color:var(--s400);font-size:0.8rem">只能聊，不能做</div>
+      </div>
+    </div>
+    <!-- Center: Screenshot -->
+    <div style="flex:1;display:flex;justify-content:center">
+      <div class="img-frame" style="width:100%;max-width:1000px;height:520px">
+        <img src="slide-agent-chat.png" alt="AI Agent 对话操作" class="img-card">
+      </div>
+    </div>
+    <!-- Right: Our Agent -->
+    <div style="flex:0 0 280px;background:rgba(37,99,235,0.12);border-radius:1.25rem;padding:2rem;border:1px solid rgba(59,130,246,0.2);text-align:center">
+      <div style="font-size:1rem;font-weight:700;color:var(--blue-light);margin-bottom:0.8rem;letter-spacing:0.05em">AGENT</div>
+      <h3 style="color:var(--blue-light);font-size:1.2rem;margin-bottom:0.8rem">我们的 AI Agent</h3>
+      <div class="flex-col gap-2" style="color:var(--s300);font-size:0.9rem">
+        <div>"帮我把文件分类"</div>
+        <div>→ 搜索 → 规划 → 执行</div>
+        <div>→ 文件已移动 ✓</div>
+        <div style="margin-top:0.5rem;color:var(--blue-light);font-size:0.8rem">能聊，更能做</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-num" style="color:var(--s500)">3 / 14</div>
+</div>
+
+<!-- ═══ 4: AGENT CAPABILITY MATRIX ═══ -->
+<div class="slide flex-center px-16" style="flex-direction:column">
+  <div class="t-label" style="margin-bottom:0.5rem">Agent 能力</div>
+  <h2 class="t-title" style="text-align:center;margin-bottom:2rem"><span style="color:var(--blue)">15 种操作</span>，Agent 一站式执行</h2>
+  <div style="width:100%;max-width:1500px">
+    <!-- Section: File Ops -->
+    <div style="margin-bottom:1.5rem">
+      <h4 style="font-size:0.9rem;color:var(--s500);margin-bottom:0.6rem;font-weight:600">文件操作</h4>
+      <div class="agent-grid">
+        <div class="agent-chip risk-med">移动文件</div>
+        <div class="agent-chip risk-low">复制文件</div>
+        <div class="agent-chip risk-med">重命名</div>
+        <div class="agent-chip risk-high">删除文件</div>
+        <div class="agent-chip risk-low">打开文件</div>
+        <div class="agent-chip risk-low">打开位置</div>
+        <div class="agent-chip risk-med">导入文件</div>
+        <div class="agent-chip risk-high">加密到安全空间</div>
+      </div>
+    </div>
+    <!-- Section: Tags -->
+    <div style="margin-bottom:1.5rem">
+      <h4 style="font-size:0.9rem;color:var(--s500);margin-bottom:0.6rem;font-weight:600">标签管理</h4>
+      <div class="agent-grid">
+        <div class="agent-chip risk-med">设置标签（替换）</div>
+        <div class="agent-chip risk-low">追加标签</div>
+        <div class="agent-chip risk-low">移除标签</div>
+        <div style="grid-column:4"></div>
+      </div>
+    </div>
+    <!-- Section: Navigation -->
+    <div style="margin-bottom:2rem">
+      <h4 style="font-size:0.9rem;color:var(--s500);margin-bottom:0.6rem;font-weight:600">一键跳转</h4>
+      <div class="agent-grid">
+        <div class="agent-chip risk-low">搜索文件</div>
+        <div class="agent-chip risk-low">文件分类</div>
+        <div class="agent-chip risk-low">去重检测</div>
+        <div style="grid-column:4"></div>
+      </div>
+    </div>
+    <!-- Risk legend + features -->
+    <div class="grid-3">
+      <div class="card" style="text-align:center;padding:1.2rem">
+        <div style="display:flex;gap:0.5rem;justify-content:center;margin-bottom:0.5rem">
+          <span style="width:12px;height:12px;border-radius:50%;background:#dc2626"></span>
+          <span style="font-size:0.8rem;color:var(--red)">高风险</span>
+        </div>
+        <div style="display:flex;gap:0.5rem;justify-content:center;margin-bottom:0.5rem">
+          <span style="width:12px;height:12px;border-radius:50%;background:#d97706"></span>
+          <span style="font-size:0.8rem;color:var(--amber)">中风险</span>
+        </div>
+        <div style="display:flex;gap:0.5rem;justify-content:center">
+          <span style="width:12px;height:12px;border-radius:50%;background:#16a34a"></span>
+          <span style="font-size:0.8rem;color:#16a34a">低风险</span>
+        </div>
+        <div style="font-size:0.75rem;color:var(--s400);margin-top:0.5rem">风险着色确认栏</div>
+      </div>
+      <div class="card" style="text-align:center;padding:1.2rem">
+        <div style="font-size:2rem;margin-bottom:0.3rem;font-weight:800;color:var(--blue)">ID</div>
+        <div style="font-weight:700;font-size:0.95rem">ID → 文件名智能解析</div>
+        <div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">确认栏显示「合同.pdf」<br>而非「ID: a1b2c3d4」</div>
+      </div>
+      <div class="card" style="text-align:center;padding:1.2rem">
+        <div style="font-size:2rem;margin-bottom:0.3rem">✓✗</div>
+        <div style="font-weight:700;font-size:0.95rem">逐条确认 / 拒绝</div>
+        <div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">不想要的操作单独拒绝<br>其余一键执行</div>
+      </div>
+    </div>
+  </div>
+  <div class="page-num">4 / 14</div>
+</div>
+
+<!-- ═══ 5: SMART SEARCH ═══ -->
+<div class="slide flex-center px-12" style="gap:2rem">
+  <div style="flex:1;max-width:480px">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1.5rem">
+      <span style="background:var(--blue);color:white;width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.9rem">1</span>
+      <div class="t-label">核心功能</div>
+    </div>
+    <h2 class="t-title" style="margin-bottom:1.5rem">一句话<br>找到你要的文件</h2>
+    <p class="t-body" style="font-size:1.05rem">
+      <strong>不是搜文件名，是理解你的意思。</strong><br>
+      输入"上个月的 PPT"→ BGE-M3 模型把文字转成语义向量 → 与 U 盘所有文件内容做余弦相似度 → FTS5 全文索引关键词加权 → 两路融合排序。
+    </p>
+    <div style="display:flex;gap:2rem;margin-top:2rem">
+      <div><div class="t-stat-sm" style="color:var(--blue)">&lt;0.3s</div><div style="font-size:0.85rem;color:var(--s500)">千文件搜索</div></div>
+      <div><div class="t-stat-sm" style="color:var(--blue)">语义+关键词</div><div style="font-size:0.85rem;color:var(--s500)">双引擎融合</div></div>
+    </div>
+  </div>
+  <div style="flex:1.3;display:flex;justify-content:center">
+    <div class="img-frame" style="width:100%;max-width:880px;height:580px">
+      <img src="slide-search.png" alt="智能搜索" class="img-card">
+    </div>
+  </div>
+  <div class="page-num">5 / 14</div>
+</div>
+
+<!-- ═══ 6: AI AGENT IN ACTION ═══ -->
+<div class="slide flex-center px-16" style="flex-direction:column">
+  <div class="t-label" style="margin-bottom:0.5rem">核心功能</div>
+  <h2 class="t-title" style="text-align:center;margin-bottom:2.5rem">AI Agent 实战：<span style="color:var(--blue)">搜索 → 规划 → 执行</span></h2>
+  <div style="width:100%;max-width:1500px">
+    <!-- Step cards -->
+    <div class="grid-3" style="margin-bottom:2rem">
+      <div class="card" style="text-align:center">
+        <div style="font-size:2rem;margin-bottom:0.5rem;font-weight:800;color:var(--blue)">1</div>
+        <h4 style="font-weight:700;margin-bottom:0.5rem">理解意图</h4>
+        <p class="t-body" style="font-size:0.9rem">用户："帮我把文档归归类"<br>→ Agent 检测到搜索 + 操作意图</p>
+      </div>
+      <div class="card" style="text-align:center">
+        <div style="font-size:2rem;margin-bottom:0.5rem;font-weight:800;color:var(--blue)">2</div>
+        <h4 style="font-weight:700;margin-bottom:0.5rem">规划操作</h4>
+        <p class="t-body" style="font-size:0.9rem">搜索相关文件 → 返回结果<br>→ 同时发出分类+标签 action 标记</p>
+      </div>
+      <div class="card" style="text-align:center;background:#f0fdf4;border-color:#bbf7d0">
+        <div style="font-size:2rem;margin-bottom:0.5rem;font-weight:800;color:var(--emerald)">3</div>
+        <h4 style="font-weight:700;margin-bottom:0.5rem;color:#166534">确认执行</h4>
+        <p class="t-body" style="font-size:0.9rem;color:#166534">用户看到风险着色的确认栏<br>→ 逐条审核 → 一键执行</p>
+      </div>
+    </div>
+    <!-- Real screenshot: Agent with confirmation bar -->
+    <div class="img-frame" style="width:100%;max-width:1300px;height:400px;margin:0 auto">
+      <img src="slide-agent-confirm.png" alt="Agent 确认栏" class="img-card" style="padding:0.25rem">
+    </div>
+  </div>
+  <div class="page-num">6 / 14</div>
+</div>
+
+<!-- ═══ 7: SMART ORGANIZATION ═══ -->
+<div class="slide flex-center px-12" style="gap:2rem">
+  <div style="flex:1;max-width:480px">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1.5rem">
+      <span style="background:var(--emerald);color:white;width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.9rem">2</span>
+      <div class="t-label">核心功能</div>
+    </div>
+    <h2 class="t-title" style="margin-bottom:1.5rem">自动整理<br>告别混乱</h2>
+    <div class="flex-col gap-5" style="margin-bottom:2rem">
+      <div>
+        <h4 style="font-size:1.1rem;font-weight:700;color:var(--s800);margin-bottom:0.3rem">智能分类</h4>
+        <p class="t-body">AI 按类型 + 内容语义自动归类，Agent 可一键触发分类页面</p>
+      </div>
+      <div>
+        <h4 style="font-size:1.1rem;font-weight:700;color:var(--s800);margin-bottom:0.3rem">重复检测</h4>
+        <p class="t-body">BLAKE3 哈希精确比对，Agent 可一键触发去重</p>
+      </div>
+    </div>
+    <div class="card" style="background:var(--s50);border:none">
+      <div class="t-body" style="font-size:0.9rem">
+        对 Agent 说 <strong>"帮我把这些文件分类，找找有没有重复的"</strong><br>
+        → 自动跳转分类页 + 去重检测
+      </div>
+    </div>
+  </div>
+  <div style="flex:1.3;display:flex;justify-content:center">
+    <div class="img-frame" style="width:100%;max-width:880px;height:580px">
+      <img src="slide-classify.png" alt="智能分类" class="img-card">
+    </div>
+  </div>
+  <div class="page-num">7 / 14</div>
+</div>
+
+<!-- ═══ 8: SECURE SPACE ═══ -->
+<div class="slide flex-center px-12" style="gap:2rem">
+  <div style="flex:1.3;display:flex;justify-content:center">
+    <div class="img-frame" style="width:100%;max-width:880px;height:580px">
+      <img src="slide-vault.png" alt="安全空间" class="img-card">
+    </div>
+  </div>
+  <div style="flex:1;max-width:480px">
+    <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:1.5rem">
+      <span style="background:#7c3aed;color:white;width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:0.9rem">3</span>
+      <div class="t-label">核心功能</div>
+    </div>
+    <h2 class="t-title" style="margin-bottom:1.5rem">给你的文件<br>上一把锁</h2>
+    <div class="flex-col gap-3">
+      <div style="display:flex;gap:0.75rem;align-items:center"><span style="color:#7c3aed;font-weight:700">✓</span> AES-256-GCM 认证加密 — 每个文件独立加密</div>
+      <div style="display:flex;gap:0.75rem;align-items:center"><span style="color:#7c3aed;font-weight:700">✓</span> Argon2id 密钥派生 — 抗 GPU 暴力破解</div>
+      <div style="display:flex;gap:0.75rem;align-items:center"><span style="color:#7c3aed;font-weight:700">✓</span> 密钥仅存内存 — 拔出 U 盘自动消失</div>
+    </div>
+    <div class="divider" style="margin:1.5rem 0"></div>
+    <div class="card" style="background:var(--s50);border:none">
+      <div style="font-weight:700;font-size:0.95rem;margin-bottom:0.3rem;color:#7c3aed">Session Key 方案</div>
+      <p class="t-body" style="font-size:0.85rem">
+        Agent 发起加密操作时，<strong>不需要用户再次输入密码</strong>——系统使用解锁时缓存的密钥。<br>
+        未解锁时提示"请先解锁安全空间"，安全+便捷兼得。
+      </p>
+    </div>
+  </div>
+  <div class="page-num">8 / 14</div>
+</div>
+
+<!-- ═══ 9: LOCAL AI ENGINE ═══ -->
+<div class="slide flex-center px-16" style="flex-direction:column">
+  <div class="t-label" style="margin-bottom:1rem">技术亮点</div>
+  <h2 class="t-title" style="text-align:center;margin-bottom:3rem"><span style="color:var(--blue)">100% 本地</span> AI 推理引擎</h2>
+  <div class="grid-2" style="width:100%;max-width:1400px;gap:2.5rem">
+    <div class="card" style="padding:2.5rem;text-align:center">
+      <div style="font-size:1.2rem;font-weight:800;color:var(--blue);margin-bottom:1rem;letter-spacing:0.05em">CANDLE</div>
+      <h3 style="font-size:1.3rem;font-weight:700;margin-bottom:1rem">Candle 纯 Rust 推理</h3>
+      <div class="flex-col gap-3" style="text-align:left">
+        <div style="display:flex;gap:0.75rem;align-items:center">
+          <span style="color:var(--emerald);font-weight:700">✓</span> HuggingFace 官方 Rust ML 框架
+        </div>
+        <div style="display:flex;gap:0.75rem;align-items:center">
+          <span style="color:var(--emerald);font-weight:700">✓</span> 零 Python · 零 CUDA · 纯 CPU 推理
+        </div>
+        <div style="display:flex;gap:0.75rem;align-items:center">
+          <span style="color:var(--emerald);font-weight:700">✓</span> 编译为单文件，无需运行环境
+        </div>
+        <div style="display:flex;gap:0.75rem;align-items:center">
+          <span style="color:var(--emerald);font-weight:700">✓</span> 模型文件存在 U 盘，拔网线一切照常
+        </div>
+      </div>
+    </div>
+    <div class="card" style="padding:2.5rem;text-align:center">
+      <div style="font-size:1.2rem;font-weight:800;color:var(--emerald);margin-bottom:1rem;letter-spacing:0.05em">MODELS</div>
+      <h3 style="font-size:1.3rem;font-weight:700;margin-bottom:1rem">双模型协同</h3>
+      <div style="display:flex;gap:1.5rem;margin-top:1rem">
+        <div style="flex:1;background:var(--s50);border-radius:1rem;padding:1.2rem;text-align:center">
+          <div style="font-weight:700;font-size:1rem;color:var(--blue)">BGE-small-zh</div>
+          <div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">语义向量<br>~100MB</div>
+        </div>
+        <div style="flex:1;background:var(--s50);border-radius:1rem;padding:1.2rem;text-align:center">
+          <div style="font-weight:700;font-size:1rem;color:var(--emerald)">Qwen2.5</div>
+          <div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">对话 + Agent 推理<br>~700MB</div>
+        </div>
+      </div>
+      <div style="margin-top:1.5rem;font-size:0.85rem;color:var(--s500)">
+        合计 &lt;2GB · 32GB U 盘仅占 6%
+      </div>
+    </div>
+  </div>
+  <div style="margin-top:2rem;padding:1rem 2rem;background:var(--s50);border-radius:0.75rem;text-align:center;max-width:1200px">
+    <span style="color:var(--s500);font-size:0.85rem">
+      可选 API 模式（SiliconFlow + DeepSeek）供有网络环境下更强性能，默认本地离线
+    </span>
+  </div>
+  <div class="page-num">9 / 14</div>
+</div>
+
+<!-- ═══ 10: TECH ARCHITECTURE ═══ -->
+<div class="slide flex-center px-16" style="flex-direction:column">
+  <div class="t-label" style="margin-bottom:1rem">技术路线</div>
+  <h2 class="t-title" style="text-align:center;margin-bottom:3rem">五层架构 · Agent 驱动</h2>
+  <div style="width:100%;max-width:1500px">
+    <div class="flex-col gap-4" style="margin-bottom:2rem">
+      <div style="display:flex;gap:1rem;align-items:stretch">
+        <div style="background:var(--blue);color:white;padding:0.75rem 1.5rem;border-radius:0.75rem;font-weight:700;font-size:0.85rem;display:flex;align-items:center;min-width:140px;justify-content:center">前端层</div>
+        <div style="background:#eff6ff;flex:1;padding:0.75rem 1.5rem;border-radius:0.75rem;display:flex;align-items:center;gap:1rem">
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">React 19</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">Zustand</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">Tailwind CSS</span>
+          <span style="color:var(--s500);font-size:0.85rem">风险着色确认栏 · 流式渲染 · 懒加载</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:stretch">
+        <div style="background:#7c3aed;color:white;padding:0.75rem 1.5rem;border-radius:0.75rem;font-weight:700;font-size:0.85rem;display:flex;align-items:center;min-width:140px;justify-content:center">Agent 调度层</div>
+        <div style="background:#f5f3ff;flex:1;padding:0.75rem 1.5rem;border-radius:0.75rem;display:flex;align-items:center;gap:1rem">
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">意图检测</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">RAG 注入</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">Action 解析</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">file_id→文件名映射</span>
+          <span style="color:var(--s500);font-size:0.85rem">15 种操作统一调度</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:stretch">
+        <div style="background:var(--cyan);color:white;padding:0.75rem 1.5rem;border-radius:0.75rem;font-weight:700;font-size:0.85rem;display:flex;align-items:center;min-width:140px;justify-content:center">IPC 桥接</div>
+        <div style="background:#ecfeff;flex:1;padding:0.75rem 1.5rem;border-radius:0.75rem;display:flex;align-items:center;gap:1rem">
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">Tauri v2</span>
+          <span style="color:var(--s500);font-size:0.85rem">跨平台原生窗口 · 事件驱动 · 安全 IPC</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:stretch">
+        <div style="background:var(--emerald);color:white;padding:0.75rem 1.5rem;border-radius:0.75rem;font-weight:700;font-size:0.85rem;display:flex;align-items:center;min-width:140px;justify-content:center">AI 引擎层</div>
+        <div style="background:#ecfdf5;flex:1;padding:0.75rem 1.5rem;border-radius:0.75rem;display:flex;align-items:center;gap:1rem">
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">Candle</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">BGE / Qwen2.5</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">SiliconFlow BGE-M3</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">DeepSeek V4</span>
+          <span style="color:var(--s500);font-size:0.85rem">双模式 · 自动降级</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:1rem;align-items:stretch">
+        <div style="background:var(--s700);color:white;padding:0.75rem 1.5rem;border-radius:0.75rem;font-weight:700;font-size:0.85rem;display:flex;align-items:center;min-width:140px;justify-content:center">存储层</div>
+        <div style="background:var(--s50);flex:1;padding:0.75rem 1.5rem;border-radius:0.75rem;display:flex;align-items:center;gap:1rem">
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">SQLite + FTS5</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">BLAKE3</span>
+          <span style="background:white;padding:0.3rem 0.8rem;border-radius:0.5rem;font-size:0.85rem;font-weight:600">AES-256-GCM</span>
+          <span style="color:var(--s500);font-size:0.85rem">全文索引 · 去重 · 加密</span>
+        </div>
+      </div>
+    </div>
+    <div class="grid-4">
+      <div class="card" style="text-align:center;padding:1.2rem"><div class="t-stat-sm" style="color:var(--navy)">Rust</div><div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">全栈语言</div></div>
+      <div class="card" style="text-align:center;padding:1.2rem"><div class="t-stat-sm" style="color:var(--blue)">~50MB</div><div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">程序体积</div></div>
+      <div class="card" style="text-align:center;padding:1.2rem"><div class="t-stat-sm" style="color:var(--cyan)">&lt;2GB</div><div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">含模型总大小</div></div>
+      <div class="card" style="text-align:center;padding:1.2rem"><div class="t-stat-sm" style="color:var(--emerald)">0</div><div style="font-size:0.8rem;color:var(--s500);margin-top:0.3rem">网络请求(本地)</div></div>
+    </div>
+  </div>
+  <div class="page-num">10 / 14</div>
+</div>
+
+<!-- ═══ 11: PRIVACY ═══ -->
+<div class="slide bg-slate flex-center px-16" style="flex-direction:column">
+  <div class="t-label" style="margin-bottom:1rem">隐私 & 安全</div>
+  <h2 class="t-title" style="text-align:center;margin-bottom:3rem">你的数据，从未离开你的 U 盘</h2>
+  <div class="grid-4" style="width:100%;max-width:1400px">
+    <div class="card" style="text-align:center"><div style="font-size:2rem;font-weight:800;color:var(--blue);margin-bottom:0.5rem">01</div><h4 style="font-weight:700;font-size:1rem">零网络请求</h4><p class="t-body" style="font-size:0.85rem">本地模式下 AI 推理全在 CPU 完成，拔网线一切照常</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:2rem;font-weight:800;color:var(--blue);margin-bottom:0.5rem">02</div><h4 style="font-weight:700;font-size:1rem">非破坏性</h4><p class="t-body" style="font-size:0.85rem">仅创建 .semanticdrive 缓存，绝不修改原始文件</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:2rem;font-weight:800;color:var(--blue);margin-bottom:0.5rem">03</div><h4 style="font-weight:700;font-size:1rem">即拔即走</h4><p class="t-body" style="font-size:0.85rem">所有数据在 U 盘上，不在电脑留痕迹</p></div>
+    <div class="card" style="text-align:center"><div style="font-size:2rem;font-weight:800;color:var(--blue);margin-bottom:0.5rem">04</div><h4 style="font-weight:700;font-size:1rem">认证加密</h4><p class="t-body" style="font-size:0.85rem">每个文件独立加密，Agent 用 session key 无需反复输入密码</p></div>
+  </div>
+  <div style="margin-top:2.5rem;padding:1.5rem 2.5rem;background:var(--navy);border-radius:1rem;text-align:center">
+    <p style="color:var(--blue-light);font-size:1.3rem;font-weight:700">"本地模式——拔掉网线，一切照常"</p>
+  </div>
+  <div class="page-num">11 / 14</div>
+</div>
+
+<!-- ═══ 12: COMPETITIVE EDGE ═══ -->
+<div class="slide flex-center px-16" style="flex-direction:column">
+  <div class="t-label" style="margin-bottom:1rem">竞争分析</div>
+  <h2 class="t-title" style="text-align:center;margin-bottom:2rem">我们不只是搜索工具</h2>
+  <div style="width:100%;max-width:1400px">
+    <table class="cmp-table">
+      <thead>
+        <tr>
+          <th style="border-radius:0.75rem 0 0 0">能力</th>
+          <th style="background:var(--blue)">Semantic Drive AI</th>
+          <th>Everything</th>
+          <th>Listary</th>
+          <th>云盘</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>语义搜索</strong></td><td class="chk">✓ AI 理解意图</td><td class="crs">✗ 文件名</td><td class="crs">✗ 文件名</td><td class="crs">✗ 关键词</td></tr>
+        <tr><td><strong>AI Agent 操作</strong></td><td class="chk">✓ 15 种操作</td><td class="crs">✗</td><td class="crs">✗</td><td class="crs">✗</td></tr>
+        <tr><td><strong>Agent 风险控制</strong></td><td class="chk">✓ 逐条确认+着色</td><td class="crs">✗</td><td class="crs">✗</td><td class="crs">✗</td></tr>
+        <tr><td><strong>离线运行</strong></td><td class="chk">✓ 100%</td><td class="chk">✓</td><td class="chk">✓</td><td class="crs">✗</td></tr>
+        <tr><td><strong>即插即用</strong></td><td class="chk">✓ 免安装</td><td class="chk">✓</td><td class="crs">✗</td><td class="crs">✗</td></tr>
+        <tr><td><strong>文件加密</strong></td><td class="chk">✓ AES-256</td><td class="crs">✗</td><td class="crs">✗</td><td class="chk">✓ 服务端</td></tr>
+        <tr><td><strong>自动分类去重</strong></td><td class="chk">✓ AI + BLAKE3</td><td class="crs">✗</td><td class="crs">✗</td><td class="crs">✗</td></tr>
+        <tr><td><strong>双模式 AI</strong></td><td class="chk">✓ 本地+API</td><td class="crs">✗</td><td class="crs">✗</td><td class="crs">✗</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="page-num">12 / 14</div>
+</div>
+
+<!-- ═══ 13: COMMERCIALIZATION + ROADMAP ═══ -->
+<div class="slide flex-center px-16" style="gap:3rem">
+  <div style="flex:1;max-width:600px">
+    <div class="t-label" style="margin-bottom:1rem">商业化</div>
+    <h2 class="t-title" style="margin-bottom:2rem">三层收入模型</h2>
+    <div class="flex-col gap-4">
+      <div class="card" style="border-left:4px solid var(--blue)"><div style="font-weight:800;font-size:1.1rem;color:var(--navy)">硬件预装分成</div><p class="t-body" style="font-size:0.9rem">U 盘厂商出厂预装 · ¥2-5/只 · Agent 是差异化卖点</p></div>
+      <div class="card" style="border-left:4px solid var(--cyan)"><div style="font-weight:800;font-size:1.1rem;color:var(--navy)">专业版订阅</div><p class="t-body" style="font-size:0.9rem">¥9.9/月 · API 模式 · 高级模型 · 企业批量管理</p></div>
+      <div class="card" style="border-left:4px solid var(--emerald)"><div style="font-weight:800;font-size:1.1rem;color:var(--navy)">企业授权</div><p class="t-body" style="font-size:0.9rem">¥5-20/授权 · 定制预装 · 后台管理 · 高客单价</p></div>
+    </div>
+  </div>
+  <div style="flex:1;max-width:550px">
+    <h3 style="font-weight:700;font-size:1.2rem;margin-bottom:1.5rem">三年路线</h3>
+    <div class="timeline" style="margin-bottom:1rem">
+      <div class="timeline-item"><div class="year">Y1</div><div class="desc">冷启动 · 10万用户</div></div>
+      <div class="timeline-item"><div class="year">Y2</div><div class="desc">增长 · 50万用户</div></div>
+      <div class="timeline-item"><div class="year">Y3</div><div class="desc">规模化 · 150万用户</div></div>
+    </div>
+    <div style="background:var(--s50);border-radius:1rem;padding:1.5rem">
+      <div class="grid-3" style="text-align:center">
+        <div><div class="t-stat-sm" style="color:var(--blue)">¥86万</div><div style="font-size:0.8rem;color:var(--s500)">Y1 收入</div></div>
+        <div><div class="t-stat-sm" style="color:var(--cyan)">¥400万</div><div style="font-size:0.8rem;color:var(--s500)">Y2 收入</div></div>
+        <div><div class="t-stat-sm" style="color:var(--emerald)">¥1,180万</div><div style="font-size:0.8rem;color:var(--s500)">Y3 收入</div></div>
+      </div>
+    </div>
+  </div>
+  <div class="page-num">13 / 14</div>
+</div>
+
+<!-- ═══ 14: CLOSING ═══ -->
+<div class="slide bg-navy flex-center" style="flex-direction:column;text-align:center">
+  <div style="position:absolute;bottom:0;left:0;right:0;height:6px;background:linear-gradient(90deg,var(--blue),var(--cyan),var(--emerald))"></div>
+  <div style="max-width:1050px">
+    <div class="t-label" style="color:var(--s400);margin-bottom:1.5rem">感谢聆听</div>
+    <h1 class="t-hero" style="font-size:4.5rem;margin-bottom:2rem">
+      你的 U 盘里<br>
+      住着一个<span style="color:var(--blue-light)">AI Agent</span>
+    </h1>
+    <p style="font-size:1.4rem;color:var(--s400);margin-bottom:3rem">不只是聊天。搜索、整理、加密、分类——Agent 替你执行。</p>
+    <div style="display:flex;gap:2rem;justify-content:center">
+      <div style="background:rgba(255,255,255,0.06);border-radius:0.75rem;padding:1rem 2rem"><div style="font-size:0.8rem;color:var(--s500)">核心技术</div><div style="font-size:1rem;color:var(--s300);margin-top:0.3rem">Tauri v2 · Rust · React · Candle</div></div>
+      <div style="background:rgba(255,255,255,0.06);border-radius:0.75rem;padding:1rem 2rem"><div style="font-size:0.8rem;color:var(--s500)">AI 引擎</div><div style="font-size:1rem;color:var(--s300);margin-top:0.3rem">BGE-M3 · DeepSeek-V4 · Qwen2.5</div></div>
+    </div>
+  </div>
+  <div class="page-num" style="color:var(--s500)">14 / 14</div>
+</div>
+
+</body>
+</html>

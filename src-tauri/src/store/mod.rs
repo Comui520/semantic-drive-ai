@@ -10,6 +10,30 @@ pub struct MetadataStore {
     conn: Mutex<Connection>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ActionHistoryEntry {
+    pub id: String,
+    pub action_json: String,
+    pub inverse_action_json: Option<String>,
+    pub result: String,
+    pub status: String,
+    pub created_at: String,
+    pub undone_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentTask {
+    pub id: String,
+    pub kind: String,
+    pub payload: String,
+    pub status: String,
+    pub progress: u32,
+    pub result: Option<String>,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 impl MetadataStore {
     /// Open or create the metadata database at the given directory.
     pub fn open(db_dir: &Path) -> Result<Self, String> {
@@ -97,6 +121,40 @@ impl MetadataStore {
             );
 
             CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+
+            CREATE TABLE IF NOT EXISTS action_history (
+                id TEXT PRIMARY KEY,
+                action_json TEXT NOT NULL,
+                inverse_action_json TEXT,
+                result TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'completed',
+                created_at TEXT NOT NULL,
+                undone_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_action_history_created ON action_history(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS agent_tasks (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL,
+                progress INTEGER NOT NULL DEFAULT 0,
+                result TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_updated ON agent_tasks(updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS cloud_embeddings (
+                file_id TEXT PRIMARY KEY,
+                model TEXT NOT NULL,
+                content_hash TEXT,
+                vector_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_cloud_embeddings_model ON cloud_embeddings(model);
 
             -- FTS5 virtual table for full-text search on content_text
             CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
@@ -535,6 +593,13 @@ impl MetadataStore {
     pub fn remove_file(&self, id: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
         conn.execute("DELETE FROM files WHERE id = ?1", params![id])
+            .map_err(|e| format!("Delete error: {}", e))?;
+        Ok(())
+    }
+
+    pub fn remove_file_by_path(&self, path: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute("DELETE FROM files WHERE path = ?1", params![path])
             .map_err(|e| format!("Delete error: {}", e))?;
         Ok(())
     }
@@ -1048,6 +1113,93 @@ impl MetadataStore {
 
         Ok(results)
     }
+    pub fn record_action_history(&self, id: &str, action_json: &str, inverse_action_json: Option<&str>, result: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute(
+            "INSERT INTO action_history (id, action_json, inverse_action_json, result, status, created_at) VALUES (?1, ?2, ?3, ?4, 'completed', datetime('now'))",
+            params![id, action_json, inverse_action_json, result],
+        ).map_err(|e| format!("History insert error: {}", e))?;
+        Ok(())
+    }
+
+    pub fn list_action_history(&self, limit: u32) -> Result<Vec<ActionHistoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT id, action_json, inverse_action_json, result, status, created_at, undone_at FROM action_history ORDER BY created_at DESC LIMIT ?1")
+            .map_err(|e| format!("History query error: {}", e))?;
+        let rows = stmt.query_map(params![limit], |row| Ok(ActionHistoryEntry {
+            id: row.get(0)?, action_json: row.get(1)?, inverse_action_json: row.get(2)?, result: row.get(3)?,
+            status: row.get(4)?, created_at: row.get(5)?, undone_at: row.get(6)?,
+        })).map_err(|e| format!("History map error: {}", e))?.filter_map(Result::ok).collect();
+        Ok(rows)
+    }
+
+    pub fn get_action_history(&self, id: &str) -> Result<Option<ActionHistoryEntry>, String> {
+        Ok(self.list_action_history(500)?.into_iter().find(|entry| entry.id == id))
+    }
+
+    pub fn mark_action_undone(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute("UPDATE action_history SET status = 'undone', undone_at = datetime('now') WHERE id = ?1", params![id])
+            .map_err(|e| format!("History update error: {}", e))?;
+        Ok(())
+    }
+
+    pub fn create_agent_task(&self, id: &str, kind: &str, payload: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute("INSERT INTO agent_tasks (id, kind, payload, status, progress, created_at, updated_at) VALUES (?1, ?2, ?3, 'queued', 0, datetime('now'), datetime('now'))", params![id, kind, payload])
+            .map_err(|e| format!("Task insert error: {}", e))?;
+        Ok(())
+    }
+
+    pub fn update_agent_task(&self, id: &str, status: &str, progress: u32, result: Option<&str>, error: Option<&str>) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        conn.execute("UPDATE agent_tasks SET status = ?1, progress = ?2, result = COALESCE(?3, result), error = ?4, updated_at = datetime('now') WHERE id = ?5", params![status, progress, result, error, id])
+            .map_err(|e| format!("Task update error: {}", e))?;
+        Ok(())
+    }
+
+    pub fn get_agent_tasks(&self, limit: u32) -> Result<Vec<AgentTask>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT id, kind, payload, status, progress, result, error, created_at, updated_at FROM agent_tasks ORDER BY updated_at DESC LIMIT ?1")
+            .map_err(|e| format!("Task query error: {}", e))?;
+        let rows = stmt.query_map(params![limit], |row| Ok(AgentTask {
+            id: row.get(0)?, kind: row.get(1)?, payload: row.get(2)?, status: row.get(3)?, progress: row.get(4)?,
+            result: row.get(5)?, error: row.get(6)?, created_at: row.get(7)?, updated_at: row.get(8)?,
+        })).map_err(|e| format!("Task map error: {}", e))?.filter_map(Result::ok).collect();
+        Ok(rows)
+    }
+
+    pub fn update_cloud_embedding(&self, file_id: &str, model: &str, content_hash: Option<&str>, vector: &[f32]) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let vector_json = serde_json::to_string(vector).map_err(|e| format!("Embedding serialize error: {}", e))?;
+        conn.execute("INSERT INTO cloud_embeddings (file_id, model, content_hash, vector_json, updated_at) VALUES (?1, ?2, ?3, ?4, datetime('now')) ON CONFLICT(file_id) DO UPDATE SET model=excluded.model, content_hash=excluded.content_hash, vector_json=excluded.vector_json, updated_at=excluded.updated_at", params![file_id, model, content_hash, vector_json])
+            .map_err(|e| format!("Embedding save error: {}", e))?;
+        Ok(())
+    }
+
+    pub fn cloud_embedding_count(&self, model: Option<&str>) -> Result<u64, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let count = if let Some(model) = model { conn.query_row("SELECT COUNT(*) FROM cloud_embeddings WHERE model = ?1", params![model], |row| row.get(0)) } else { conn.query_row("SELECT COUNT(*) FROM cloud_embeddings", [], |row| row.get(0)) };
+        count.map_err(|e| format!("Embedding count error: {}", e))
+    }
+
+    pub fn get_cloud_embeddings(&self, model: &str) -> Result<Vec<(String, Vec<f32>)>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut stmt = conn.prepare("SELECT file_id, vector_json FROM cloud_embeddings WHERE model = ?1")
+            .map_err(|e| format!("Embedding query error: {}", e))?;
+        let rows = stmt.query_map(params![model], |row| {
+            let id: String = row.get(0)?;
+            let json: String = row.get(1)?;
+            Ok((id, json))
+        }).map_err(|e| format!("Embedding map error: {}", e))?;
+        let mut result = Vec::new();
+        for row in rows {
+            let (id, json) = row.map_err(|e| format!("Embedding row error: {}", e))?;
+            if let Ok(vector) = serde_json::from_str::<Vec<f32>>(&json) { result.push((id, vector)); }
+        }
+        Ok(result)
+    }
+
 }
 
 /// Get the path for app data directory on the storage device.

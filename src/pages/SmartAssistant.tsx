@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useChatStore, type ChatMessage, type ChatSession, type FileAction } from '../store/chatStore'
 import { invoke } from '@tauri-apps/api/core'
+import { listen } from '@tauri-apps/api/event'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import { useAppStore } from '../store/appStore'
 import {
   MessageSquare, Plus, Trash2, Edit2, Check, X, Send, Bot, User, Loader2,
-  FolderOpen, ExternalLink, Paperclip, Search, AlertTriangle,
+  FolderOpen, ExternalLink, Paperclip, Search, AlertTriangle, ListTodo, RotateCcw, Undo2,
 } from 'lucide-react'
 
 // ── Helpers ──
@@ -359,7 +360,7 @@ function FileTreeModal({
 
   useEffect(() => () => { if (clickRef.current) clearTimeout(clickRef.current) }, [])
 
-  const findNode = (path: string): TreeNode | null => {
+  const findNode = useCallback((path: string): TreeNode | null => {
     const search = (nodes: TreeNode[]): TreeNode | null => {
       for (const n of nodes) {
         if (n.path === path) return n
@@ -371,7 +372,7 @@ function FileTreeModal({
       return null
     }
     return search(tree)
-  }
+  }, [tree])
 
   const handleNodeClick = useCallback((node: TreeNode) => {
     if (clickRef.current) {
@@ -412,7 +413,7 @@ function FileTreeModal({
     }
     if (result.length > 0) onSelect(result)
     onClose()
-  }, [selectedPath, filtered, onSelect, onClose])
+  }, [selectedPath, filtered, onSelect, onClose, findNode])
 
   const renderNode = (node: TreeNode, depth: number) => {
     const isSelected = node.path === selectedPath
@@ -764,6 +765,106 @@ function ActionConfirmBar({
   )
 }
 
+
+interface AgentTaskSummary {
+  id: string
+  kind: string
+  payload: string
+  status: string
+  progress: number
+  result?: string | null
+  error?: string | null
+  created_at: string
+  updated_at: string
+}
+
+interface ActionHistorySummary {
+  id: string
+  action_json: string
+  inverse_action_json?: string | null
+  result: string
+  status: string
+  created_at: string
+  undone_at?: string | null
+}
+
+function AgentCenter({ onClose }: { onClose: () => void }) {
+  const [tasks, setTasks] = useState<AgentTaskSummary[]>([])
+  const [history, setHistory] = useState<ActionHistorySummary[]>([])
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+
+  const refresh = useCallback(async () => {
+    try {
+      const [nextTasks, nextHistory] = await Promise.all([
+        invoke<AgentTaskSummary[]>('list_agent_tasks', { limit: 20 }),
+        invoke<ActionHistorySummary[]>('list_action_history', { limit: 20 }),
+      ])
+      setTasks(nextTasks)
+      setHistory(nextHistory)
+    } catch (error) {
+      setMessage(String(error))
+    }
+  }, [])
+
+  useEffect(() => {
+    void refresh()
+    let unlisten: (() => void) | undefined
+    void listen('task-progress', () => { void refresh() }).then((fn) => { unlisten = fn })
+    return () => { unlisten?.() }
+  }, [refresh])
+
+  const rebuildEmbeddings = async () => {
+    setBusy(true); setMessage('')
+    try {
+      await invoke('rebuild_cloud_embeddings')
+      setMessage('云端 Embedding 重建任务已加入队列。')
+      await refresh()
+    } catch (error) { setMessage(String(error)) } finally { setBusy(false) }
+  }
+
+  const retryTask = async (id: string) => {
+    setBusy(true)
+    try { await invoke('retry_agent_task', { taskId: id }); await refresh() } catch (error) { setMessage(String(error)) } finally { setBusy(false) }
+  }
+
+  const cancelTask = async (id: string) => {
+    try { await invoke('cancel_agent_task', { taskId: id }); await refresh() } catch (error) { setMessage(String(error)) }
+  }
+
+  const undo = async (id: string) => {
+    setBusy(true)
+    try { await invoke('undo_action', { historyId: id }); setMessage('操作已撤销。'); await refresh() } catch (error) { setMessage(String(error)) } finally { setBusy(false) }
+  }
+
+  return <div className="absolute right-4 top-14 z-20 w-[min(420px,calc(100vw-2rem))] glass rounded-xl border border-subtle shadow-2xl p-4 space-y-4">
+    <div className="flex items-center gap-2">
+      <ListTodo size={16} className="text-accent-cyan" /><h3 className="text-sm font-medium text-primary flex-1">Agent 任务中心</h3>
+      <button onClick={onClose} className="text-secondary hover:text-primary"><X size={15} /></button>
+    </div>
+    {message && <p className="text-xs text-accent-cyan bg-accent-cyan/10 rounded-lg px-3 py-2">{message}</p>}
+    <button onClick={() => void rebuildEmbeddings()} disabled={busy} className="w-full secondary-btn text-xs flex items-center justify-center gap-2"><RotateCcw size={13} />重建云端 Embedding 索引</button>
+    <div>
+      <p className="text-xs text-secondary mb-2">后台任务</p>
+      <div className="space-y-1.5 max-h-32 overflow-y-auto">
+        {tasks.length === 0 && <p className="text-xs text-silver-500">暂无任务</p>}
+        {tasks.map((task) => <div key={task.id} className="rounded-lg bg-white/5 px-2.5 py-2 text-xs">
+          <div className="flex items-center gap-2"><span className="flex-1 text-silver-300">{task.kind === 'embedding_rebuild' ? '云端向量重建' : task.kind}</span><span className="text-silver-500">{task.status} {task.progress}%</span></div>
+          {task.error && <p className="text-red-300 mt-1 truncate">{task.error}</p>}
+          <div className="flex gap-2 mt-1"><button onClick={() => void retryTask(task.id)} disabled={busy || !['failed', 'cancelled'].includes(task.status)} className="text-accent-cyan disabled:opacity-30">重试</button><button onClick={() => void cancelTask(task.id)} disabled={!['queued', 'running'].includes(task.status)} className="text-amber-300 disabled:opacity-30">取消</button></div>
+        </div>)}
+      </div>
+    </div>
+    <div>
+      <p className="text-xs text-secondary mb-2">操作历史 / 撤销</p>
+      <div className="space-y-1.5 max-h-36 overflow-y-auto">
+        {history.length === 0 && <p className="text-xs text-silver-500">暂无已执行操作</p>}
+        {history.map((entry) => <div key={entry.id} className="rounded-lg bg-white/5 px-2.5 py-2 text-xs"><div className="text-silver-300 truncate">{entry.result}</div><div className="flex items-center gap-2 mt-1"><span className="text-silver-500">{entry.status}</span><button onClick={() => void undo(entry.id)} disabled={busy || entry.status !== 'completed' || !entry.inverse_action_json} className="inline-flex items-center gap-1 text-accent-cyan disabled:opacity-30"><Undo2 size={12} />撤销</button></div></div>)}
+      </div>
+    </div>
+  </div>
+}
+
 // ── Main SmartAssistant Page ──
 
 export default function SmartAssistant() {
@@ -776,6 +877,7 @@ export default function SmartAssistant() {
   } = useChatStore()
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const [showAgentCenter, setShowAgentCenter] = useState(false)
 
   // Load sessions on mount
   useEffect(() => { loadSessions() }, [loadSessions])
@@ -804,7 +906,11 @@ export default function SmartAssistant() {
       />
 
       {/* Main chat area */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="relative flex-1 flex flex-col min-w-0">
+        <div className="h-10 shrink-0 border-b border-subtle flex items-center justify-end px-4">
+          <button onClick={() => setShowAgentCenter((value) => !value)} className="inline-flex items-center gap-1.5 text-xs text-secondary hover:text-primary"><ListTodo size={14} />任务中心</button>
+        </div>
+        {showAgentCenter && <AgentCenter onClose={() => setShowAgentCenter(false)} />}
         {/* Error banner — always visible */}
         {error && (
           <div className="px-4 pt-4">

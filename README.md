@@ -21,7 +21,11 @@ Semantic Drive AI 是一个 **API-first、跨平台的 AI 文件管理助手**�
 5. 修复项目目录膨胀问题：`src-tauri/target` 是编译缓存，当前约 15.9 GB，不属于源码交付物，已由 ESLint 忽略且 `.gitignore` 已覆盖。
 6. 强化 Agent 文件操作：优先使用 `file_id`；校验工作区边界、绝对路径、Windows 驱动器前缀、文件名和索引路径。
 7. 修复 Action JSON 解析：字符串中的 `{}` 不会再破坏动作标记的解析。
-8. 保留增量扫描、SQLite 元数据、FTS5、目录浏览、分类、去重、标签和安全空间等原有能力。
+8. 接入原生 OpenAI-compatible JSON Schema tool calling，并兼容旧版 `[ACTION:...]` 服务。
+9. 增加 Agent 操作历史、可撤销的重命名/移动/标签操作，以及后台任务中心。
+10. 增加云端 Embedding 批量重建任务；索引完成后按模型版本参与语义搜索，重启后也可恢复云端结果。
+11. 文件监听改为增量同步 SQLite、文本索引和搜索缓存，而不只是通知前端刷新。
+12. 前端提供批量操作计划预览、逐项确认、任务进度、失败重试和撤销入口。
 
 ## 技术栈
 
@@ -73,8 +77,8 @@ cargo test           # Rust 单元测试（Windows GNU 环境可能需要匹配�
 ```text
 用户请求
   -> 意图识别 / RAG 文件上下文
-  -> API 生成计划与 [ACTION:{...}] 工具调用
-  -> 前端展示待确认动作
+  -> API 原生 JSON Schema tool calling（不支持时回退 [ACTION:{...}]）
+  -> 前端展示批量计划并逐项/批量确认
   -> 用户确认
   -> Rust 工具层校验 file_id、工作区边界和参数
   -> 执行文件操作、更新 SQLite、返回审计结果
@@ -88,7 +92,7 @@ cargo test           # Rust 单元测试（Windows GNU 环境可能需要匹配�
 - 添加到安全空间
 - 跳转到分类和去重页面
 
-下一阶段可以将文本动作标记升级为正式的 OpenAI tool calling / JSON Schema，并增加操作历史、撤销、批量计划预览、失败重试和后台任务队列。
+操作历史和后台任务都持久化在工作区 `.semanticdrive/metadata.db` 中。云端 Embedding 任务会以批次执行并发出 `task-progress` 事件；应用重启后，未完成任务会保留为可重试记录。
 
 ## 数据与配置位置
 
@@ -106,11 +110,12 @@ src/
   store/            Zustand 状态
   types/            前后端配置类型
 src-tauri/src/
-  scanner/          扫描器、工作区边界和文件监听
+  scanner/          扫描器、工作区边界和单文件增量扫描
+  watcher.rs        文件监听事件到 SQLite/搜索索引的增量同步
   store/            SQLite 元数据、标签、聊天记录、配置
   ai/               API 客户端、回退嵌入、查询解析、混合搜索、文本提取
   chat.rs           Agent 提示词、动作协议、RAG 上下文
-  lib.rs            Tauri 命令、安全文件工具和应用装配
+  lib.rs            Tauri 命令、安全文件工具和应用装配（任务/监听逻辑已拆出）
   vault.rs          加密安全空间
 ```
 

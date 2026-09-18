@@ -159,6 +159,35 @@ pub fn scan_directory(
     Ok(entries)
 }
 
+
+/// Build metadata for one filesystem path. Used by the watcher to update the
+/// index without rescanning the entire workspace.
+pub fn scan_single_file(root: &Path, path: &Path) -> Result<Option<FileEntry>, String> {
+    let canonical_root = root.canonicalize().map_err(|e| format!("Cannot resolve root path: {}", e))?;
+    let canonical_path = path.canonicalize().map_err(|e| format!("Cannot resolve file path: {}", e))?;
+    if !canonical_path.starts_with(&canonical_root) || !canonical_path.is_file() { return Ok(None); }
+    let relative = canonical_path.strip_prefix(&canonical_root).map_err(|_| "File is outside workspace".to_string())?;
+    if relative.components().any(|part| part.as_os_str() == ".semanticdrive") { return Ok(None); }
+    let metadata = std::fs::metadata(&canonical_path).map_err(|e| format!("Cannot read file metadata: {}", e))?;
+    let name = canonical_path.file_name().and_then(|v| v.to_str()).unwrap_or("unknown").to_string();
+    if name.starts_with('.') || name.starts_with('$') { return Ok(None); }
+    let rel_path = relative.to_string_lossy().replace('\\', "/");
+    let modified = metadata.modified().map(system_time_to_iso).unwrap_or_default();
+    let created = metadata.created().map(system_time_to_iso).unwrap_or_default();
+    Ok(Some(FileEntry {
+        id: blake3::hash(rel_path.as_bytes()).to_hex()[..16].to_string(),
+        path: rel_path,
+        name,
+        extension: canonical_path.extension().and_then(|v| v.to_str()).unwrap_or("").to_lowercase(),
+        mime_type: guess_mime(&canonical_path),
+        size: metadata.len(),
+        hash: None,
+        modified,
+        created,
+        indexed_at: Utc::now().to_rfc3339(),
+    }))
+}
+
 /// Get the root path of the storage device (directory where executable resides).
 /// Used for `.semanticdrive/` internal paths (models, DB, cache).
 pub fn get_device_root() -> Result<PathBuf, String> {
@@ -240,4 +269,40 @@ fn is_relevant_event(event: &notify::Event) -> bool {
             s.starts_with('.') || s.starts_with('$') || s == ".semanticdrive"
         })
     })
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("semantic-drive-{name}-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn scan_single_file_normalizes_relative_paths() {
+        let root = temp_workspace("scanner");
+        let nested = root.join("docs");
+        fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("报告.txt");
+        fs::write(&file, "hello").unwrap();
+        let entry = scan_single_file(&root, &file).unwrap().unwrap();
+        assert_eq!(entry.path, "docs/报告.txt");
+        assert_eq!(entry.extension, "txt");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn scan_single_file_rejects_paths_outside_root() {
+        let root = temp_workspace("root");
+        let outside = temp_workspace("outside").join("secret.txt");
+        fs::write(&outside, "secret").unwrap();
+        assert!(scan_single_file(&root, &outside).unwrap().is_none());
+        let _ = fs::remove_dir_all(root.parent().unwrap_or(&root));
+        let _ = fs::remove_dir_all(outside.parent().unwrap_or(&outside));
+    }
 }

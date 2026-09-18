@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use crate::ai::api_client::{ApiEndpointConfig, ChatApiMessage};
+use crate::ai::api_client::{ApiEndpointConfig, ChatApiMessage, ChatApiTool};
 use crate::ai::search::SearchEngine;
 use crate::store::config_store::AppConfig;
 use crate::store::MetadataStore;
@@ -288,7 +288,7 @@ const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家
 
 ## 你可以做的事（操作列表）
 
-在回复中嵌入 [ACTION:JSON] 标记来执行操作。用户确认后自动执行。\
+优先使用 API 提供的原生 JSON Schema tools 来请求操作；对于不支持 tool calling 的服务，再在回复中嵌入 [ACTION:JSON] 标记。用户确认后自动执行。\
 **必须用 file_id，禁止用路径字符串。** 支持的操作：
 
 **文件操作：**
@@ -446,6 +446,7 @@ pub fn build_chat_messages_api(
         messages.push(ChatApiMessage {
             role: role.to_string(),
             content: msg.content.clone(),
+            tool_calls: None,
         });
     }
 
@@ -482,6 +483,65 @@ pub fn resolve_embedding_mode(config: &AppConfig) -> (bool, ApiEndpointConfig) {
         timeout_secs: config.embedding_api.timeout_secs,
     };
     (ep.enabled, ep)
+}
+
+/// OpenAI-compatible tools exposed to the Agent. The UI still supports the
+/// legacy `[ACTION:...]` protocol for providers that do not implement tools.
+pub fn action_tools() -> Vec<ChatApiTool> {
+    let object = |properties: serde_json::Value, required: &[&str]| {
+        serde_json::json!({
+            "type": "object",
+            "properties": properties,
+            "required": required,
+            "additionalProperties": false
+        })
+    };
+    vec![
+        ChatApiTool::function("move_file_by_id", "Move an indexed file into a workspace-relative folder.", object(serde_json::json!({
+            "file_id": {"type":"string"}, "destination": {"type":"string"}
+        }), &["file_id", "destination"])),
+        ChatApiTool::function("copy_file_by_id", "Copy an indexed file into a workspace-relative folder.", object(serde_json::json!({
+            "file_id": {"type":"string"}, "destination": {"type":"string"}
+        }), &["file_id", "destination"])),
+        ChatApiTool::function("rename_file_by_id", "Rename an indexed file without changing its folder.", object(serde_json::json!({
+            "file_id": {"type":"string"}, "new_name": {"type":"string"}
+        }), &["file_id", "new_name"])),
+        ChatApiTool::function("delete_file_by_id", "Delete an indexed file after explicit user confirmation.", object(serde_json::json!({
+            "file_id": {"type":"string"}
+        }), &["file_id"])),
+        ChatApiTool::function("set_file_tags", "Replace the custom tags of an indexed file.", object(serde_json::json!({
+            "file_id": {"type":"string"}, "tags": {"type":"array", "items":{"type":"string"}}
+        }), &["file_id", "tags"])),
+        ChatApiTool::function("add_file_tags", "Append custom tags to an indexed file.", object(serde_json::json!({
+            "file_id": {"type":"string"}, "tags": {"type":"array", "items":{"type":"string"}}
+        }), &["file_id", "tags"])),
+        ChatApiTool::function("remove_file_tags", "Remove custom tags from an indexed file.", object(serde_json::json!({
+            "file_id": {"type":"string"}, "tags": {"type":"array", "items":{"type":"string"}}
+        }), &["file_id", "tags"])),
+        ChatApiTool::function("open_file_by_id", "Open a file with the operating system default application.", object(serde_json::json!({
+            "file_id": {"type":"string"}
+        }), &["file_id"])),
+        ChatApiTool::function("open_file_location_by_id", "Reveal an indexed file in the file manager.", object(serde_json::json!({
+            "file_id": {"type":"string"}
+        }), &["file_id"])),
+        ChatApiTool::function("search_files", "Search files in the current workspace.", object(serde_json::json!({
+            "query": {"type":"string"}
+        }), &["query"])),
+        ChatApiTool::function("classify_files", "Open the classification view.", object(serde_json::json!({"type":"object", "properties":{}, "additionalProperties":false}), &[])),
+        ChatApiTool::function("find_duplicates", "Open duplicate detection.", object(serde_json::json!({"type":"object", "properties":{}, "additionalProperties":false}), &[])),
+    ]
+}
+
+/// Convert a native tool call into the action envelope consumed by the
+/// confirmation UI and Rust validator.
+pub fn tool_calls_to_actions(calls: &[crate::ai::api_client::ChatToolCall]) -> Vec<FileAction> {
+    calls.iter().filter_map(|call| {
+        let args: serde_json::Value = serde_json::from_str(&call.function.arguments).ok()?;
+        let mut envelope = serde_json::Map::new();
+        envelope.insert("cmd".into(), serde_json::Value::String(call.function.name.clone()));
+        envelope.insert("params".into(), args);
+        serde_json::from_value(serde_json::Value::Object(envelope)).ok()
+    }).collect()
 }
 
 // ── Tests ──
@@ -700,6 +760,27 @@ mod tests {
             }
             other => panic!("Expected SetFileTags, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_native_tool_schema_contains_file_id_boundary() {
+        let tools = action_tools();
+        let rename = tools.iter().find(|tool| tool.function.name == "rename_file_by_id").unwrap();
+        assert_eq!(rename.kind, "function");
+        assert!(rename.function.parameters["required"].as_array().unwrap().iter().any(|v| v == "file_id"));
+    }
+
+    #[test]
+    fn test_native_tool_call_is_normalized_to_action() {
+        let call = crate::ai::api_client::ChatToolCall {
+            id: "call-1".into(), kind: "function".into(), index: Some(0),
+            function: crate::ai::api_client::ChatToolCallFunction {
+                name: "rename_file_by_id".into(),
+                arguments: r#"{"file_id":"abc","new_name":"new.txt"}"#.into(),
+            },
+        };
+        let actions = tool_calls_to_actions(&[call]);
+        assert!(matches!(&actions[0], FileAction::RenameFileById { file_id, new_name } if file_id == "abc" && new_name == "new.txt"));
     }
 
     #[test]

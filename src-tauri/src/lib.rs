@@ -5,6 +5,7 @@ mod dedup;
 mod scanner;
 mod store;
 mod vault;
+mod watcher;
 
 use ai::api_client;
 use ai::llm::{LlmEngine, ParsedQuery, GenerateConfig};
@@ -14,16 +15,17 @@ use dedup::DuplicateGroup;
 use scanner::FileEntry;
 use store::config_store::{AppConfig, ConfigStore};
 use store::MetadataStore;
-use chat::{ChatSession, ChatMessage, ChatTokenEvent, ChatIntent, FileAction, ChatActionsEvent, parse_actions, strip_action_markers};
+use chat::{ChatSession, ChatMessage, ChatTokenEvent, ChatIntent, FileAction, ChatActionsEvent, parse_actions, strip_action_markers, tool_calls_to_actions};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::sync::RwLock;
+use std::collections::VecDeque;
 use tauri::{Emitter, Manager, State};
 
-struct AppState {
-    store: Mutex<Option<MetadataStore>>,
+pub(crate) struct AppState {
+    pub(crate) store: Mutex<Option<MetadataStore>>,
     device_root: Mutex<Option<String>>,
-    search_engine: RwLock<SearchEngine>,
+    pub(crate) search_engine: RwLock<SearchEngine>,
     llm_engine: Mutex<LlmEngine>,
     scan_progress: Mutex<Option<scanner::ScanProgress>>,
     classification_cache: Mutex<Option<ClassificationResult>>,
@@ -32,6 +34,7 @@ struct AppState {
     chat_cancelled: AtomicBool,
     config_store: Mutex<ConfigStore>,
     vault_key: Mutex<Option<[u8; 32]>>,
+    task_queue: Mutex<VecDeque<String>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -55,6 +58,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()
     }
     Ok(())
 }
+
 
 // ── Device & Scanning Commands ──
 
@@ -499,6 +503,12 @@ async fn search_files(
     let use_en = bilingual;
     let max_results_clamped = max_results.max(20).min(200);
     let tags_filter = tags.clone(); // clone before move into second spawn_blocking
+    let cloud_embedding_endpoint = {
+        let state = app.state::<AppState>();
+        let config = state.config_store.lock().map_err(|e| e.to_string())?.get_config();
+        let (enabled, endpoint) = chat::resolve_embedding_mode(&config);
+        if enabled { Some(endpoint) } else { None }
+    };
 
     let results = tokio::task::spawn_blocking(move || {
         // Check cancellation inside the blocking task too
@@ -543,6 +553,55 @@ async fn search_files(
                 file_size: f.size, modified: f.modified.clone(),
             }).collect()
         };
+        // Prefer cloud vectors when a compatible batch index exists. The local
+        // fallback remains in place so search is still useful offline.
+        if let Some(endpoint) = cloud_embedding_endpoint.as_ref() {
+            if let Ok(query_vectors) = api_client::call_embedding_api(endpoint, &[search_query_clone.clone()]) {
+                if let Some(query_vector) = query_vectors.first() {
+                    if let Ok(guard) = state.store.lock() {
+                        if let Some(db) = guard.as_ref() {
+                            if let Ok(cloud_vectors) = db.get_cloud_embeddings(&endpoint.model) {
+                                let file_map: std::collections::HashMap<&str, &FileEntry> = files.iter().map(|f| (f.id.as_str(), f)).collect();
+                                let mut cloud_scores = std::collections::HashMap::new();
+                                for (file_id, vector) in cloud_vectors {
+                                    if let Some(file) = file_map.get(file_id.as_str()) {
+                                        let dot: f32 = query_vector.iter().zip(vector.iter()).map(|(a, b)| a * b).sum();
+                                        let q_norm = query_vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+                                        let v_norm = vector.iter().map(|v| v * v).sum::<f32>().sqrt();
+                                        if q_norm > 0.0 && v_norm > 0.0 {
+                                            cloud_scores.insert(file_id, ((dot / (q_norm * v_norm)) + 1.0) / 2.0);
+                                        }
+                                        let _ = file;
+                                    }
+                                }
+                                let existing_ids: std::collections::HashSet<String> = results.iter().map(|result| result.file_id.clone()).collect();
+                                for result in &mut results {
+                                    if let Some(score) = cloud_scores.get(&result.file_id) {
+                                        result.score = (result.score * 0.35 + score * 0.65).min(1.0);
+                                        result.match_type = "云端语义匹配".to_string();
+                                    }
+                                }
+                                // The local in-memory index is intentionally not
+                                // persisted. Rehydrate cloud-only hits after restart.
+                                for file in &files {
+                                    if existing_ids.contains(&file.id) { continue; }
+                                    if let Some(score) = cloud_scores.get(&file.id) {
+                                        if *score >= 0.35 {
+                                            results.push(SearchResult {
+                                                file_id: file.id.clone(), file_name: file.name.clone(), file_path: file.path.clone(),
+                                                score: *score, match_type: "云端语义匹配".to_string(), snippet: String::new(),
+                                                file_size: file.size, modified: file.modified.clone(),
+                                            });
+                                        }
+                                    }
+                                }
+                                results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if let Some((ref start, ref end)) = time_range {
             results.retain(|r| r.modified >= *start && r.modified <= *end);
         }
@@ -1205,19 +1264,38 @@ async fn chat_send(
         let messages = chat::build_chat_messages_api(
             &history, &msg, rag_context.as_deref(), fc.as_deref(),
         );
-        let full_response = api_client::call_chat_completion_streaming_api(
-            &endpoint,
-            &messages,
-            gen_config.temperature,
-            gen_config.max_tokens,
-            Some(&state.chat_cancelled),
-            &mut |token: String| {
-                let _ = app_for_gen.emit("chat-token", ChatTokenEvent {
-                    session_id: sid.clone(), token, done: false,
-                });
-            },
-        )?;
-
+        let tool_defs = chat::action_tools();
+        let mut emit_token = |token: String| {
+            let _ = app_for_gen.emit("chat-token", ChatTokenEvent {
+                session_id: sid.clone(), token, done: false,
+            });
+        };
+        let completion = match api_client::call_chat_completion_streaming_api_with_tools(
+            &endpoint, &messages, gen_config.temperature, gen_config.max_tokens,
+            &tool_defs, Some(&state.chat_cancelled), &mut emit_token,
+        ) {
+            Ok(value) => value,
+            Err(tool_error) => {
+                // A few older OpenAI-compatible gateways reject `tools`. Retry
+                // without the extension so API-first mode remains compatible.
+                log::warn!("Native tool calling unavailable, retrying legacy chat: {}", tool_error);
+                let text = api_client::call_chat_completion_streaming_api(
+                    &endpoint, &messages, gen_config.temperature, gen_config.max_tokens,
+                    Some(&state.chat_cancelled), &mut emit_token,
+                )?;
+                api_client::ChatCompletionResult { text, tool_calls: Vec::new() }
+            }
+        };
+        // Native tool calling is normalized to the same action envelope used by
+        // older providers. This keeps confirmation, validation, and history in
+        // one code path while allowing true JSON-schema tool calls by default.
+        let tool_actions = tool_calls_to_actions(&completion.tool_calls);
+        let mut full_response = completion.text;
+        for action in &tool_actions {
+            if let Ok(json) = serde_json::to_string(action) {
+                full_response.push_str(&format!("\n[ACTION:{}]", json));
+            }
+        }
         Ok((full_response, assistant_file_refs_json))
     }).await.map_err(|e| format!("Task panicked: {}", e))?;
 
@@ -1487,8 +1565,7 @@ fn resolve_destination(dest: &str, src: &std::path::Path, root: &std::path::Path
 
 /// Execute a `FileAction` that was requested by the AI assistant.
 /// Called from the frontend after user confirmation.
-#[tauri::command]
-fn execute_file_action(action_json: String, state: State<AppState>) -> Result<String, String> {
+fn execute_file_action_inner(action_json: String, state: &AppState) -> Result<String, String> {
     let action: FileAction = serde_json::from_str(&action_json)
         .map_err(|e| format!("无效的操作: {}", e))?;
 
@@ -1776,6 +1853,66 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
     }
 }
 
+
+fn inverse_action_for(action: &FileAction, state: &AppState) -> Option<FileAction> {
+    let db_guard = state.store.lock().ok()?;
+    let db = db_guard.as_ref()?;
+    match action {
+        FileAction::RenameFileById { file_id, .. } => {
+            let old_path = db.get_files_by_ids(&[file_id.clone()]).ok()?.into_iter().next()?.path;
+            let old_name = old_path.rsplit('/').next()?.to_string();
+            Some(FileAction::RenameFileById { file_id: file_id.clone(), new_name: old_name })
+        }
+        FileAction::MoveFileById { file_id, .. } => {
+            let old_path = db.get_files_by_ids(&[file_id.clone()]).ok()?.into_iter().next()?.path;
+            Some(FileAction::MoveFileById { file_id: file_id.clone(), destination: old_path })
+        }
+        FileAction::SetFileTags { file_id, .. } => {
+            let tags = db.get_file_custom_tags(file_id).ok()?;
+            Some(FileAction::SetFileTags { file_id: file_id.clone(), tags })
+        }
+        FileAction::AddFileTags { file_id, tags } => Some(FileAction::RemoveFileTags { file_id: file_id.clone(), tags: tags.clone() }),
+        FileAction::RemoveFileTags { file_id, tags } => Some(FileAction::AddFileTags { file_id: file_id.clone(), tags: tags.clone() }),
+        _ => None,
+    }
+}
+
+/// Execute a confirmed Agent action and persist an auditable history record.
+#[tauri::command]
+fn execute_file_action(action_json: String, state: State<AppState>) -> Result<String, String> {
+    let action: FileAction = serde_json::from_str(&action_json)
+        .map_err(|e| format!("无效的操作: {}", e))?;
+    let inverse = inverse_action_for(&action, &state);
+    let result = execute_file_action_inner(action_json.clone(), &state)?;
+    if let Ok(store_guard) = state.store.lock() {
+        if let Some(db) = store_guard.as_ref() {
+            let inverse_json = inverse.as_ref().and_then(|value| serde_json::to_string(value).ok());
+            let _ = db.record_action_history(&uuid::Uuid::new_v4().to_string(), &action_json, inverse_json.as_deref(), &result);
+        }
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+fn list_action_history(state: State<AppState>, limit: Option<u32>) -> Result<Vec<store::ActionHistoryEntry>, String> {
+    let guard = state.store.lock().map_err(|e| e.to_string())?;
+    guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.list_action_history(limit.unwrap_or(50).min(500))
+}
+
+#[tauri::command]
+fn undo_action(state: State<AppState>, history_id: String) -> Result<String, String> {
+    let entry = {
+        let guard = state.store.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.get_action_history(&history_id)?
+    }.ok_or_else(|| "找不到操作记录".to_string())?;
+    if entry.status != "completed" { return Err("该操作已经撤销或不可撤销".to_string()); }
+    let inverse_json = entry.inverse_action_json.ok_or_else(|| "该操作暂不支持撤销".to_string())?;
+    let result = execute_file_action_inner(inverse_json, &state)?;
+    let guard = state.store.lock().map_err(|e| e.to_string())?;
+    guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.mark_action_undone(&history_id)?;
+    Ok(result)
+}
+
 // ── Dedup Commands ──
 
 #[tauri::command]
@@ -1846,6 +1983,135 @@ async fn find_duplicates(app: tauri::AppHandle) -> Result<Vec<DuplicateGroup>, S
     })
     .await
     .map_err(|e| format!("Task panicked: {}", e))?
+}
+
+
+fn spawn_cloud_embedding_rebuild(app: tauri::AppHandle, task_id: String, endpoint: api_client::ApiEndpointConfig) {
+    tokio::spawn(async move {
+        let app_bg = app.clone();
+        let task_id_for_worker = task_id.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let state = app_bg.state::<AppState>();
+            if let Ok(mut queue) = state.task_queue.lock() { queue.push_back(task_id_for_worker.clone()); }
+            let update = |status: &str, progress: u32, result: Option<&str>, error: Option<&str>| {
+                if let Ok(guard) = state.store.lock() {
+                    if let Some(db) = guard.as_ref() { let _ = db.update_agent_task(&task_id_for_worker, status, progress, result, error); }
+                }
+                let _ = app_bg.emit("task-progress", serde_json::json!({"task_id": task_id_for_worker, "status": status, "progress": progress}));
+            };
+            update("running", 0, None, None);
+            let files = {
+                let guard = state.store.lock().map_err(|e| e.to_string())?;
+                guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.get_all_files()?
+            };
+            let mut items: Vec<(String, String, Option<String>)> = Vec::new();
+            for file in files {
+                let content = {
+                    let guard = state.store.lock().map_err(|e| e.to_string())?;
+                    guard.as_ref().and_then(|db| db.get_content_text(&file.id).ok().flatten())
+                };
+                if let Some(text) = content.filter(|text| text.trim().len() >= 20) {
+                    items.push((file.id, text, file.hash));
+                }
+            }
+            let total = items.len().max(1);
+            for (chunk_index, chunk) in items.chunks(16).enumerate() {
+                let cancelled = {
+                    let guard = state.store.lock().map_err(|e| e.to_string())?;
+                    guard.as_ref().and_then(|db| db.get_agent_tasks(500).ok()).map(|tasks| tasks.iter().any(|t| t.id == task_id_for_worker && t.status == "cancelled")).unwrap_or(false)
+                };
+                if cancelled { update("cancelled", ((chunk_index * 16 * 100) / total) as u32, None, None); return Ok(()); }
+                let texts: Vec<String> = chunk.iter().map(|(_, text, _)| text.clone()).collect();
+                let vectors = api_client::call_embedding_api(&endpoint, &texts)?;
+                for ((file_id, _, hash), vector) in chunk.iter().zip(vectors.iter()) {
+                    let guard = state.store.lock().map_err(|e| e.to_string())?;
+                    if let Some(db) = guard.as_ref() { db.update_cloud_embedding(file_id, &endpoint.model, hash.as_deref(), vector)?; }
+                }
+                let progress = (((chunk_index + 1) * 16 * 100) / total).min(100) as u32;
+                update("running", progress, None, None);
+            }
+            update("completed", 100, Some(&format!("已重建 {} 个云端向量", items.len())), None);
+            if let Ok(mut queue) = state.task_queue.lock() { queue.retain(|id| id != &task_id_for_worker); }
+            Ok(())
+        }).await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                let state = app.state::<AppState>();
+                if let Ok(guard) = state.store.lock() { if let Some(db) = guard.as_ref() { let _ = db.update_agent_task(&task_id, "failed", 0, None, Some(&error)); } }
+                let _ = app.emit("task-progress", serde_json::json!({"task_id": task_id, "status": "failed", "error": error}));
+            }
+            Err(error) => {
+                let message = format!("任务线程异常: {}", error);
+                let state = app.state::<AppState>();
+                if let Ok(guard) = state.store.lock() { if let Some(db) = guard.as_ref() { let _ = db.update_agent_task(&task_id, "failed", 0, None, Some(&message)); } };
+            }
+        }
+    });
+}
+
+#[tauri::command]
+async fn rebuild_cloud_embeddings(app: tauri::AppHandle) -> Result<String, String> {
+    let endpoint = {
+        let state = app.state::<AppState>();
+        let config = state.config_store.lock().map_err(|e| e.to_string())?.get_config();
+        let (enabled, endpoint) = chat::resolve_embedding_mode(&config);
+        if !enabled { return Err("尚未配置可用的 Embedding API。请先在设置中填写地址、模型和密钥。".to_string()); }
+        endpoint
+    };
+    let task_id = uuid::Uuid::new_v4().to_string();
+    {
+        let state = app.state::<AppState>();
+        let guard = state.store.lock().map_err(|e| e.to_string())?;
+        let db = guard.as_ref().ok_or_else(|| "数据库未初始化，请先扫描工作区".to_string())?;
+        db.create_agent_task(&task_id, "embedding_rebuild", &serde_json::json!({"model": endpoint.model}).to_string())?;
+    }
+    spawn_cloud_embedding_rebuild(app, task_id.clone(), endpoint);
+    Ok(task_id)
+}
+
+#[tauri::command]
+fn list_agent_tasks(state: State<AppState>, limit: Option<u32>) -> Result<Vec<store::AgentTask>, String> {
+    let guard = state.store.lock().map_err(|e| e.to_string())?;
+    guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.get_agent_tasks(limit.unwrap_or(50).min(500))
+}
+
+#[tauri::command]
+fn cancel_agent_task(state: State<AppState>, task_id: String) -> Result<(), String> {
+    let guard = state.store.lock().map_err(|e| e.to_string())?;
+    guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.update_agent_task(&task_id, "cancelled", 0, None, None)
+}
+
+#[tauri::command]
+async fn retry_agent_task(app: tauri::AppHandle, task_id: String) -> Result<String, String> {
+    let (kind, payload) = {
+        let state = app.state::<AppState>();
+        let guard = state.store.lock().map_err(|e| e.to_string())?;
+        let task = guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.get_agent_tasks(500)?.into_iter().find(|task| task.id == task_id).ok_or_else(|| "找不到任务".to_string())?;
+        (task.kind, task.payload)
+    };
+    if kind != "embedding_rebuild" { return Err("当前只有云端 Embedding 任务支持重试".to_string()); }
+    let endpoint = {
+        let state = app.state::<AppState>();
+        let config = state.config_store.lock().map_err(|e| e.to_string())?.get_config();
+        let (enabled, endpoint) = chat::resolve_embedding_mode(&config);
+        if !enabled { return Err("Embedding API 未配置".to_string()); }
+        endpoint
+    };
+    let new_id = uuid::Uuid::new_v4().to_string();
+    {
+        let state = app.state::<AppState>();
+        let guard = state.store.lock().map_err(|e| e.to_string())?;
+        guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.create_agent_task(&new_id, "embedding_rebuild", &payload)?;
+    }
+    spawn_cloud_embedding_rebuild(app, new_id.clone(), endpoint);
+    Ok(new_id)
+}
+
+#[tauri::command]
+fn get_cloud_embedding_count(state: State<AppState>, model: Option<String>) -> Result<u64, String> {
+    let guard = state.store.lock().map_err(|e| e.to_string())?;
+    guard.as_ref().ok_or_else(|| "数据库未初始化".to_string())?.cloud_embedding_count(model.as_deref())
 }
 
 // ── Cloud configuration commands ──
@@ -2109,6 +2375,7 @@ pub fn run() {
             chat_cancelled: AtomicBool::new(false),
             config_store: Mutex::new(config_store),
             vault_key: Mutex::new(None),
+            task_queue: Mutex::new(VecDeque::new()),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -2147,22 +2414,9 @@ pub fn run() {
                 // Start filesystem watcher for auto-detecting changes
                 if let Ok(scan_root) = scanner::get_scan_root() {
                     let app_watcher = app.handle().clone();
+                    let watcher_root = scan_root.clone();
                     if let Ok(watcher) = scanner::start_file_watcher(scan_root, move |event| {
-                        use notify::EventKind;
-                        let path_str = event.paths.first()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        match event.kind {
-                            EventKind::Create(_) => log::info!("[watcher] created: {}", path_str),
-                            EventKind::Modify(_) => log::info!("[watcher] modified: {}", path_str),
-                            EventKind::Remove(_) => log::info!("[watcher] removed: {}", path_str),
-                            _ => {}
-                        }
-                        // Emit event to frontend so it can refresh if desired
-                        let _ = app_watcher.emit("files-changed", serde_json::json!({
-                            "kind": format!("{:?}", event.kind),
-                            "path": path_str,
-                        }));
+                        watcher::sync_file_event(&app_watcher, event, watcher_root.clone());
                     }) {
                         // Leak watcher to keep it alive for the entire app lifetime
                         Box::leak(Box::new(watcher));
@@ -2181,10 +2435,10 @@ pub fn run() {
             upsert_user_tag, get_user_tags, get_top_user_tags, set_file_custom_tags, get_file_custom_tags, get_files_custom_tags_batch,
             get_all_tags_with_counts, get_files_by_custom_tag, cleanup_orphan_tags,
             create_chat_session, list_chat_sessions, get_chat_messages, delete_chat_session, rename_chat_session, chat_send, stop_chat,
-            execute_file_action,
+            execute_file_action, list_action_history, undo_action,
             get_directory, rename_file, delete_file, move_file, copy_file, import_file, create_directory,
             get_config, update_config, get_scan_root_path, set_scan_root, set_ai_mode, set_embedding_api_key, set_chat_api_key,
-            test_embedding_connection, test_chat_connection,
+            test_embedding_connection, test_chat_connection, rebuild_cloud_embeddings, list_agent_tasks, cancel_agent_task, retry_agent_task, get_cloud_embedding_count,
             vault_configure, vault_unlock, vault_is_configured,
             vault_add_file, vault_add_external_file, vault_open_file, vault_delete_file,
             vault_list_files, vault_remove_file,

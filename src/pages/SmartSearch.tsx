@@ -62,7 +62,6 @@ function getFileIcon(name: string, ext?: string): string {
 export default function SmartSearch() {
   const [query, setQuery] = useState('')
   const [searching, setSearching] = useState(false)
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [_files, _setFiles] = useState<FileEntry[]>([])
   const [searchResults, setSearchResults] = useState<SearchResult[]>([])
   const [fileCount, setFileCount] = useState(0)
@@ -94,11 +93,11 @@ export default function SmartSearch() {
   const [currentPath, setCurrentPath] = useState('')
   const [clipboard, setClipboard] = useState<ClipboardState | null>(null)
 
-  const showFeedback = (msg: string, type: 'info' | 'error' = 'info') => {
+  const showFeedback = useCallback((msg: string, type: 'info' | 'error' = 'info') => {
     setFeedback(msg)
     setFeedbackType(type)
     setTimeout(() => setFeedback(''), 5000)
-  }
+  }, [])
 
   const loadDirectory = useCallback(async (path: string) => {
     try {
@@ -108,7 +107,7 @@ export default function SmartSearch() {
     } catch (err) {
       showFeedback(`无法加载目录: ${err}`, 'error')
     }
-  }, [])
+  }, [showFeedback])
 
   useEffect(() => {
     invoke<string>('get_device_root')
@@ -134,7 +133,7 @@ export default function SmartSearch() {
       showFeedback(`检测到文件变化: ${event.payload.kind} - ${event.payload.path}`, 'info')
     })
     return () => { unlisten.then(fn => fn()) }
-  }, [])
+  }, [showFeedback])
 
   // Handle searchQuery from appStore (cross-page navigation)
   useEffect(() => {
@@ -172,7 +171,7 @@ export default function SmartSearch() {
       }
       trigger()
     }
-  }, [])
+  }, [showFeedback])
 
   // Poll scan progress every 300ms while scanning
   useEffect(() => {
@@ -241,7 +240,7 @@ export default function SmartSearch() {
       setScanning(false)
       setScanProgress(null)
     }
-  }, [loadDirectory])
+  }, [loadDirectory, showFeedback])
 
   const handleSearch = async () => {
     const hasMainQuery = query.trim() !== ''
@@ -313,7 +312,7 @@ export default function SmartSearch() {
     } catch (err) {
       showFeedback(`创建文件夹失败: ${err}`, 'error')
     }
-  }, [currentPath, loadDirectory])
+  }, [currentPath, loadDirectory, showFeedback])
 
   const handleImport = async () => {
     try {
@@ -446,7 +445,7 @@ export default function SmartSearch() {
       setAllTags(tags)
       if (tags.length === 0) showFeedback('暂无标签，请先在搜索或浏览中为文件添加标签', 'info')
     } catch { setAllTags([]) }
-  }, [])
+  }, [showFeedback])
 
   const exitTagBrowseMode = useCallback(() => {
     setTagBrowseMode(false)

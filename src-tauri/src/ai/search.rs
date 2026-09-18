@@ -237,6 +237,12 @@ impl SearchEngine {
         self.zh_engine.embed_remote(query, api_config)
     }
 
+    pub fn remove_file(&mut self, file_id: &str) {
+        self.embeddings_zh.remove(file_id);
+        self.embeddings_en.remove(file_id);
+        self.contents.remove(file_id);
+    }
+
     /// Clear all indexed data
     pub fn clear(&mut self) {
         self.embeddings_zh.clear();

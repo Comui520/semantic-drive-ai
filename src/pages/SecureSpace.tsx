@@ -85,7 +85,7 @@ export default function SecureSpace() {
 
   const handleAddFile = async () => {
     try {
-      const selected = await open({ multiple: false, title: '选择要加密的文件' })
+      const selected = await open({ multiple: false, title: '选择要加密的文件（仅限设备内文件）' })
       if (!selected) return
       await invoke('vault_add_external_file', { path: selected, password })
       showFeedback('文件已加密添加')

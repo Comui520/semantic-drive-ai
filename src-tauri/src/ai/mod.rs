@@ -1,7 +1,7 @@
+pub mod api_client;
 pub mod embedding;
 pub mod extractor;
 pub mod llm;
-pub mod model_manager;
 pub mod search;
 
 use std::path::Path;

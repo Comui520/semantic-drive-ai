@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 use walkdir::WalkDir;
 
@@ -171,9 +172,30 @@ pub fn get_device_root() -> Result<PathBuf, String> {
         })
 }
 
-/// Get the root path for file scanning (parent of the executable directory).
-/// This way if the exe is in `X:\SemanticDrive\`, we scan `X:\` (the whole drive).
+static SCAN_ROOT_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+
+fn scan_root_override() -> &'static RwLock<Option<PathBuf>> {
+    SCAN_ROOT_OVERRIDE.get_or_init(|| RwLock::new(None))
+}
+
+/// Set the user-selected workspace that the scanner and Agent are allowed to use.
+pub fn set_scan_root_override(path: Option<PathBuf>) -> Result<Option<PathBuf>, String> {
+    let canonical = path.map(|value| {
+        if !value.is_dir() {
+            return Err(format!("扫描目录不存在或不是目录: {}", value.display()));
+        }
+        std::fs::canonicalize(&value).map_err(|e| format!("无法解析扫描目录: {e}"))
+    }).transpose()?;
+    *scan_root_override().write().map_err(|e| e.to_string())? = canonical.clone();
+    Ok(canonical)
+}
+
+/// Get the user-selected scan root. For backwards compatibility, an app beside
+/// a removable drive still falls back to the legacy executable-derived root.
 pub fn get_scan_root() -> Result<PathBuf, String> {
+    if let Some(root) = scan_root_override().read().map_err(|e| e.to_string())?.clone() {
+        return Ok(root);
+    }
     let exe_dir = get_device_root()?;
     // Go one level up from exe directory to scan the containing folder/drive root
     match exe_dir.parent() {

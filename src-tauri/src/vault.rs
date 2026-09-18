@@ -177,5 +177,5 @@ pub fn remove_vault_file(encrypted_name: &str, vault_dir: &Path) -> Result<(), S
 
 /// Get the vault directory path
 pub fn get_vault_dir() -> Result<PathBuf, String> {
-    crate::scanner::get_device_root().map(|p| p.join(".semanticdrive").join("vault"))
+    crate::scanner::get_scan_root().map(|p| p.join(".semanticdrive").join("vault"))
 }

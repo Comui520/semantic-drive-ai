@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type NavPage = 'search' | 'classify' | 'organize' | 'vault' | 'chat'
+export type NavPage = 'search' | 'classify' | 'organize' | 'vault' | 'chat' | 'settings'
 
 interface AppState {
   currentPage: NavPage

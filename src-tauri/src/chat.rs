@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
+use crate::ai::api_client::{ApiEndpointConfig, ChatApiMessage};
 use crate::ai::search::SearchEngine;
+use crate::store::config_store::AppConfig;
 use crate::store::MetadataStore;
 
 // ── File actions (AI-requested file operations) ──
@@ -37,6 +39,7 @@ pub enum FileAction {
     #[serde(rename = "vault_add_file")]
     VaultAddFile {
         file_path: String,
+        #[serde(default)]
         password: String,
     },
     #[serde(rename = "set_file_tags")]
@@ -68,12 +71,78 @@ pub enum FileAction {
     #[serde(rename = "vault_add_file_by_id")]
     VaultAddFileById {
         file_id: String,
+        #[serde(default)]
         password: String,
     },
+    /// Agent suggests a search query (frontend-rendered as clickable chip)
+    #[serde(rename = "search_files")]
+    SearchFiles {
+        query: String,
+    },
+    /// Import a file from within the scan root (by file_id, not path)
+    #[serde(rename = "import_file_by_id")]
+    ImportFileById {
+        file_id: String,
+        destination: String,
+    },
+    /// Open a file with the default application
+    #[serde(rename = "open_file_by_id")]
+    OpenFileById {
+        file_id: String,
+    },
+    /// Open file location in file explorer
+    #[serde(rename = "open_file_location_by_id")]
+    OpenFileLocationById {
+        file_id: String,
+    },
+    /// Append tags to a file (preserves existing tags)
+    #[serde(rename = "add_file_tags")]
+    AddFileTags {
+        file_id: String,
+        tags: Vec<String>,
+    },
+    /// Remove specific tags from a file
+    #[serde(rename = "remove_file_tags")]
+    RemoveFileTags {
+        file_id: String,
+        tags: Vec<String>,
+    },
+    /// Navigate to classification page
+    #[serde(rename = "classify_files")]
+    ClassifyFiles,
+    /// Navigate to dedup page
+    #[serde(rename = "find_duplicates")]
+    FindDuplicates,
 }
 
-/// Extract all [{"cmd":"...","params":{...}}] markers from LLM output text.
-/// Uses brace-depth counting to correctly handle nested JSON objects.
+/// Find the closing brace for a JSON object while respecting quoted strings.
+/// LLM action payloads often contain JSON-like characters in filenames or text;
+/// a plain brace counter would truncate those payloads.
+fn json_object_end(input: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, ch) in input.char_indices() {
+        if in_string {
+            if escaped { escaped = false; }
+            else if ch == '\\' { escaped = true; }
+            else if ch == '"' { in_string = false; }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 { return Some(index + 1); }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract all `[ACTION:{...}]` markers from an API response.
 pub fn parse_actions(text: &str) -> Vec<FileAction> {
     let marker = "[action:";
     let text_lower = text.to_lowercase();
@@ -83,34 +152,15 @@ pub fn parse_actions(text: &str) -> Vec<FileAction> {
     while let Some(marker_start) = text_lower[search_from..].find(marker) {
         let json_start = search_from + marker_start + marker.len();
         let remaining = &text[json_start..];
-
-        let mut brace_depth: i32 = 0;
-        let mut json_end = None;
-        for (i, c) in remaining.char_indices() {
-            match c {
-                '{' => brace_depth += 1,
-                '}' => {
-                    brace_depth -= 1;
-                    if brace_depth == 0 {
-                        json_end = Some(i + 1);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(end) = json_end {
-            let json_str = &remaining[..end];
-            if let Ok(action) = serde_json::from_str::<FileAction>(json_str) {
+        if let Some(end) = json_object_end(remaining) {
+            if let Ok(action) = serde_json::from_str::<FileAction>(&remaining[..end]) {
                 actions.push(action);
             }
             search_from = json_start + end;
         } else {
-            search_from = json_start + 1;
+            break;
         }
     }
-
     actions
 }
 
@@ -121,7 +171,7 @@ pub struct ChatActionsEvent {
     pub actions: Vec<FileAction>,
 }
 
-/// Strip all [{...}] markers from text, returning clean display text.
+/// Strip all action markers from text, returning clean display text.
 pub fn strip_action_markers(text: &str) -> String {
     let marker = "[action:";
     let text_lower = text.to_lowercase();
@@ -129,47 +179,16 @@ pub fn strip_action_markers(text: &str) -> String {
     let mut search_from = 0;
 
     while let Some(marker_start) = text_lower[search_from..].find(marker) {
-        result.push_str(&text[search_from..search_from + marker_start]);
-
-        // If the marker is wrapped in a backtick, include it in what we strip
         let abs_pos = search_from + marker_start;
-        if abs_pos > 0 && text.as_bytes()[abs_pos - 1] == b'`' {
-            result.pop();
-        }
-
+        result.push_str(&text[search_from..abs_pos]);
+        if abs_pos > 0 && text.as_bytes()[abs_pos - 1] == b'`' { result.pop(); }
         let json_start = abs_pos + marker.len();
         let remaining = &text[json_start..];
-
-        let mut brace_depth: i32 = 0;
-        let mut json_end = None;
-        for (i, c) in remaining.char_indices() {
-            match c {
-                '{' => brace_depth += 1,
-                '}' => {
-                    brace_depth -= 1;
-                    if brace_depth == 0 {
-                        json_end = Some(i + 1);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if let Some(end) = json_end {
-            search_from = json_start + end;
-            if text[search_from..].starts_with(']') {
-                search_from += 1;
-            }
-            // Skip trailing backtick if present
-            if search_from < text.len() && text.as_bytes()[search_from] == b'`' {
-                search_from += 1;
-            }
-        } else {
-            search_from = json_start + 1;
-        }
+        let Some(end) = json_object_end(remaining) else { break; };
+        search_from = json_start + end;
+        if text[search_from..].starts_with(']') { search_from += 1; }
+        if search_from < text.len() && text.as_bytes()[search_from] == b'`' { search_from += 1; }
     }
-
     result.push_str(&text[search_from..]);
     result
 }
@@ -263,90 +282,50 @@ pub fn detect_intent(message: &str) -> ChatIntent {
 
 // ── Chat prompt templates ──
 
-const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家）的智能助手，运行在用户的U盘/移动硬盘上。\
-你的任务是帮助用户管理、查找、整理文件，并回答相关问题。\
-请用中文回答，简洁准确，必要时给出具体操作建议。
+const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家），运行在用户设备上的跨平台 AI 文件管理 Agent。\
+你不仅可以聊天，更能**实际操作文件**——搜索、移动、重命名、打标签、加密、分类、去重。\
+中文回答，简洁准确。先给出简短计划；涉及文件变更时只生成带 file_id 的待确认操作，绝不假定操作已经执行。
 
-## 应用功能概览
+## 你可以做的事（操作列表）
 
-### 1. 智能搜索 (SmartSearch)
-- 支持自然语言搜索文件，例如「上周的Excel」「2024年的照片」
-- 支持按自定义标签搜索和浏览
-- 支持目录浏览、文件操作（重命名、移动、复制、删除）
-- 搜索结果按文件夹分组展示，可点击打开文件或定位文件位置
+在回复中嵌入 [ACTION:JSON] 标记来执行操作。用户确认后自动执行。\
+**必须用 file_id，禁止用路径字符串。** 支持的操作：
 
-### 2. 文件分类 (FileClassify)
-- 自动按文件类型和内容将文件归类（文档、图片、视频、代码等）
-- 智能标签：自动提取关键词标签
-- 点击分类可查看该类下的所有文件，并可在搜索中定位
+**文件操作：**
+- 移动 [ACTION:{\"cmd\":\"move_file_by_id\",\"params\":{\"file_id\":\"xxx\",\"destination\":\"目标文件夹/\"}}]
+- 复制 [ACTION:{\"cmd\":\"copy_file_by_id\",\"params\":{\"file_id\":\"xxx\",\"destination\":\"目标文件夹/\"}}]
+- 重命名 [ACTION:{\"cmd\":\"rename_file_by_id\",\"params\":{\"file_id\":\"xxx\",\"new_name\":\"新名称.txt\"}}]
+- 删除 [ACTION:{\"cmd\":\"delete_file_by_id\",\"params\":{\"file_id\":\"xxx\"}}]
+- 打开 [ACTION:{\"cmd\":\"open_file_by_id\",\"params\":{\"file_id\":\"xxx\"}}]
+- 打开位置 [ACTION:{\"cmd\":\"open_file_location_by_id\",\"params\":{\"file_id\":\"xxx\"}}]
+- 导入 [ACTION:{\"cmd\":\"import_file_by_id\",\"params\":{\"file_id\":\"xxx\",\"destination\":\"目标文件夹/\"}}]
 
-### 3. 整理建议 (OrganizeSuggestions)
-- 检测重复文件（基于BLAKE3哈希），显示可清理的空间
-- 显示大文件列表，帮助清理磁盘空间
-- 当用户询问「哪些文件重复」「如何清理空间」时，建议打开整理建议页面
+**标签管理：**
+- 设置标签 [ACTION:{\"cmd\":\"set_file_tags\",\"params\":{\"file_id\":\"xxx\",\"tags\":[\"标签\"]}}] ← 替换全部标签
+- 添加标签 [ACTION:{\"cmd\":\"add_file_tags\",\"params\":{\"file_id\":\"xxx\",\"tags\":[\"新标签\"]}}] ← 追加不覆盖
+- 移除标签 [ACTION:{\"cmd\":\"remove_file_tags\",\"params\":{\"file_id\":\"xxx\",\"tags\":[\"要删的标签\"]}}]
 
-### 4. 安全空间 (SecureSpace)
-- AES-256-GCM + Argon2id 加密存储
-- 保护隐私文件，需要密码才能访问
-- 当用户想保护敏感文件时，建议使用安全空间
+**安全空间：**
+- 加密 [ACTION:{\"cmd\":\"vault_add_file_by_id\",\"params\":{\"file_id\":\"xxx\"}}] ← 需用户在安全空间页面先解锁
 
-## 文件操作能力
+**页面跳转：**
+- 搜索 [ACTION:{\"cmd\":\"search_files\",\"params\":{\"query\":\"搜索词\"}}]
+- 分类 [ACTION:{\"cmd\":\"classify_files\"}]
+- 去重 [ACTION:{\"cmd\":\"find_duplicates\"}]
 
-**你不仅能回答问题，还能直接执行文件操作！** 在回复中嵌入 [ACTION:JSON] 标记即可请求执行操作。
-标记会被自动提取执行，用户会看到确认提示。支持的操作为：
+## 重要规则
+1. 只用 file_id，不用路径。一个标记一个操作。标记嵌入正文，不用代码块。
+2. set_file_tags 替换全部标签；add_file_tags 追加；remove_file_tags 移除指定标签。区分清楚！
+3. 删除、移动等风险操作仅用户明确要求时使用。
+4. 文件夹路径直接作为 destination，不加额外子目录。
+5. 批量操作允许多个 action 标记同时出现。
+6. 你不会知道用户的加密空间密码——如果用户要求加密，发 vault_add 操作，系统用已解锁的密码。
 
-### 移动文件（按ID）
-[ACTION:{\"cmd\":\"move_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]
-
-### 重命名文件（按ID）
-[ACTION:{\"cmd\":\"rename_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"new_name\":\"新名称.txt\"}}]
-
-### 删除文件（按ID）
-[ACTION:{\"cmd\":\"delete_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\"}}]
-
-### 复制文件（按ID）
-[ACTION:{\"cmd\":\"copy_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]
-
-### 添加到安全空间（按ID）
-[ACTION:{\"cmd\":\"vault_add_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"password\":\"密码\"}}]
-
-### 添加标签
-[ACTION:{\"cmd\":\"set_file_tags\",\"params\":{\"file_id\":\"文件ID\",\"tags\":[\"标签1\",\"标签2\"]}}]
-
-**使用规则：**
-1. **绝对不能使用路径字符串引用文件。只能用 file_id。** 当看到文件上下文中的 ID: xxxxx 时，将 file_id 原样复制到 action 参数中。
-	   - 例：[{\"cmd\":\"move_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"destination\":\"目标文件夹/\"}}]
-	   - 例：[{\"cmd\":\"rename_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\",\"new_name\":\"新名称.txt\"}}]
-	   - 例：[{\"cmd\":\"delete_file_by_id\",\"params\":{\"file_id\":\"xxx-xxx\"}}]
-2. 每个 [...] 只能对应一个操作。需要多个操作时，输出多个标记。
-3. 操作标记应嵌入在回复文本中合适的位置，用户在确认前会看到你的完整回复。
-4. 只有用户明确要求执行操作时，才使用 action 标记。不要自作主张。
-5. 删除/移动等有风险的操作，一定要用户明确表达意图后才使用 action 标记。
-6. 操作执行后会自动显示结果，回复中无需重复说明操作已执行。
-7. 如果操作需要信息（如密码、目标路径），先问清楚再使用 action 标记。
-8. 操作执行后建议告知用户结果，或提出下一步建议。
-9. **不要在 [ACTION:...] 标记外套反引号或代码块。** 标记本身已可被识别，额外包装会导致显示异常。
-9. **不要在 [ACTION:...] 标记外套反引号或代码块。** 标记本身已可被识别，额外包装会导致显示异常。
-
-### 文件夹操作规则
-
-当系统在「附加文件夹路径」区域提供了文件夹列表时：
-1. 这些文件夹是用户指定的目标位置，应直接作为 destination 参数使用
-2. 不要创建额外的子目录层级，除非用户明确要求
-3. destination 路径保持简洁，不要添加多余空格、标点或分隔符
-
-## 助手行为指南
-
-1. 当用户问「重复文件」「清理空间」「释放空间」 → 建议打开**整理建议**页面查看重复文件和大文件
-2. 当用户希望保护隐私文件 → 建议使用**安全空间**进行加密存储
-3. 当用户想重命名/移动/复制/删除文件 → **使用 action 标记直接执行**，不需要让用户手动操作
-4. 当用户想知道文件分类 → 建议打开**文件分类**页面查看
-5. 当用户想搜索文件 → 使用 RAG 搜索功能，返回匹配的文件信息
-6. 附加文件时：分析文件内容，给出针对性的操作建议，必要时使用 action 标记执行
-7. 绝对诚实：不编造不存在的信息。如果不清楚某个功能，如实告知
-8. 如果用户问的是纯知识性问题，直接回答，无需涉及文件功能
-
-请始终以有帮助的、专业的助手身份回应。";
+## 行为风格
+- 搜索文件后：列出 3-5 个最相关文件 + 主动建议下一步（分类/去重/标签/加密）
+- 低匹配度结果直接忽略，别提它们。搜索无结果诚实告知。
+- 发现文件混乱主动建议分类；发现重复指出浪费空间。
+- 绝不编造文件或内容。所有信息来自实际数据。";
 
 const CHAT_TEMPLATE_SYSTEM: &str = "<|im_start|>system\n{SYSTEM}<|im_end|>\n";
 const CHAT_TEMPLATE_USER: &str = "<|im_start|>user\n{CONTENT}<|im_end|>\n";
@@ -363,7 +342,7 @@ pub fn build_chat_prompt(
     let mut prompt = CHAT_TEMPLATE_SYSTEM.replace("{SYSTEM}", SYSTEM_PROMPT);
 
     // Add history (last 6 exchanges for context window management)
-    let max_history = 12; // 6 exchanges × 2 messages each
+    let max_history = 8; // 4 exchanges × 2 messages each
     let start = history.len().saturating_sub(max_history);
     for msg in &history[start..] {
         match msg.role.as_str() {
@@ -384,7 +363,7 @@ pub fn build_chat_prompt(
             fc, user_message
         ),
         (None, Some(rc)) => format!(
-            "以下是搜索到的相关文件信息：\n{}\n\n用户的问题是：{}",
+            "以下是搜索到的文件（按相关度排序，低相关度结果已过滤）：\n{}\n\n用户的问题是：{}",
             rc, user_message
         ),
         (None, None) => user_message.to_string(),
@@ -405,15 +384,22 @@ pub fn search_to_rag_context(
     bilingual: bool,
 ) -> Result<(String, Vec<FileRef>), String> {
     let files = store.get_all_files()?;
-    let results = search_engine.search(query, &files, max_results, bilingual);
+    let content_scores = store.search_content_fts5(query).unwrap_or_default();
+    let content_score_map: std::collections::HashMap<String, f32> = content_scores.into_iter().collect();
+    // Use a larger max_results for the engine, then filter by score threshold afterward
+    let results = search_engine.search(query, &files, (max_results * 2).max(20), bilingual, Some(&content_score_map));
 
-    if results.is_empty() {
-        return Ok(("未找到匹配的文件。".to_string(), Vec::new()));
+    // Score threshold: only include results with meaningful relevance
+    const MIN_SCORE: f32 = 0.15;
+    let relevant: Vec<_> = results.into_iter().filter(|r| r.score >= MIN_SCORE).collect();
+
+    if relevant.is_empty() {
+        return Ok(("未找到匹配的文件。请尝试更具体的关键词。".to_string(), Vec::new()));
     }
 
     let mut ctx = String::new();
     let mut file_refs = Vec::new();
-    for (i, r) in results.iter().enumerate() {
+    for (i, r) in relevant.iter().take(max_results).enumerate() {
         ctx.push_str(&format!(
             "{}. **{}** (ID: `{}`, 路径: `{}`)\n   类型: {} | 匹配度: {:.0}%",
             i + 1, r.file_name, r.file_id, r.file_path, r.match_type, r.score * 100.0
@@ -431,6 +417,71 @@ pub fn search_to_rag_context(
         });
     }
     Ok((ctx, file_refs))
+}
+
+// ── API Mode Helpers ──
+
+/// Build OpenAI-compatible messages array for API calls.
+/// Returns system prompt first, then conversation history, then user message with RAG context.
+pub fn build_chat_messages_api(
+    history: &[ChatMessage],
+    user_message: &str,
+    rag_context: Option<&str>,
+    file_context: Option<&str>,
+) -> Vec<ChatApiMessage> {
+    let mut messages: Vec<ChatApiMessage> = Vec::new();
+
+    // System message with file context if available
+    let mut system_content = SYSTEM_PROMPT.to_string();
+    if let Some(fc) = file_context {
+        system_content.push_str("\n\n--- 当前文件上下文 ---\n");
+        system_content.push_str(fc);
+    }
+    messages.push(ChatApiMessage::system(&system_content));
+
+    // Conversation history (limit to last 20 messages for API token limits)
+    let skip = if history.len() > 20 { history.len() - 20 } else { 0 };
+    for msg in history.iter().skip(skip) {
+        let role = if msg.role == "user" { "user" } else { "assistant" };
+        messages.push(ChatApiMessage {
+            role: role.to_string(),
+            content: msg.content.clone(),
+        });
+    }
+
+    // Current user message with optional RAG context
+    let mut user_content = user_message.to_string();
+    if let Some(rag) = rag_context {
+        user_content.push_str("\n\n--- 相关文件信息 ---\n");
+        user_content.push_str(rag);
+    }
+    messages.push(ChatApiMessage::user(&user_content));
+
+    messages
+}
+
+/// Determine whether to use API mode for chat, based on config.
+pub fn resolve_chat_mode(config: &AppConfig) -> (bool, ApiEndpointConfig) {
+    let ep = ApiEndpointConfig {
+        base_url: config.chat_api.base_url.clone(),
+        api_key: config.chat_api.api_key.clone(),
+        model: config.chat_api.model.clone(),
+        enabled: config.chat_api.enabled && !config.chat_api.api_key.trim().is_empty(),
+        timeout_secs: config.chat_api.timeout_secs,
+    };
+    (ep.enabled, ep)
+}
+
+/// Determine whether to use API mode for embedding, based on config.
+pub fn resolve_embedding_mode(config: &AppConfig) -> (bool, ApiEndpointConfig) {
+    let ep = ApiEndpointConfig {
+        base_url: config.embedding_api.base_url.clone(),
+        api_key: config.embedding_api.api_key.clone(),
+        model: config.embedding_api.model.clone(),
+        enabled: config.embedding_api.enabled && !config.embedding_api.api_key.trim().is_empty(),
+        timeout_secs: config.embedding_api.timeout_secs,
+    };
+    (ep.enabled, ep)
 }
 
 // ── Tests ──
@@ -567,6 +618,14 @@ mod tests {
 完成。"#;
         let result = strip_action_markers(text);
         assert_eq!(result, "操作1。\n操作2。\n完成。");
+    }
+
+    #[test]
+    fn test_action_parser_ignores_braces_inside_strings() {
+        let text = r#"请处理该文件。[ACTION:{"cmd":"rename_file_by_id","params":{"file_id":"abc","new_name":"report {final}.txt"}}]"#;
+        let actions = parse_actions(text);
+        assert_eq!(actions.len(), 1);
+        assert!(matches!(&actions[0], FileAction::RenameFileById { new_name, .. } if new_name == "report {final}.txt"));
     }
 
     #[test]

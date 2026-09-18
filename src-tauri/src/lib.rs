@@ -6,12 +6,13 @@ mod scanner;
 mod store;
 mod vault;
 
+use ai::api_client;
 use ai::llm::{LlmEngine, ParsedQuery, GenerateConfig};
-use ai::model_manager::ModelInfo;
 use ai::search::{SearchEngine, SearchResult};
 use classifier::{CategoryInfo, ClassificationResult, TagInfo};
 use dedup::DuplicateGroup;
 use scanner::FileEntry;
+use store::config_store::{AppConfig, ConfigStore};
 use store::MetadataStore;
 use chat::{ChatSession, ChatMessage, ChatTokenEvent, ChatIntent, FileAction, ChatActionsEvent, parse_actions, strip_action_markers};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +30,8 @@ struct AppState {
     duplicate_cache: Mutex<Option<Vec<DuplicateGroup>>>,
     search_cancelled: Mutex<bool>,
     chat_cancelled: AtomicBool,
+    config_store: Mutex<ConfigStore>,
+    vault_key: Mutex<Option<[u8; 32]>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -67,8 +70,8 @@ fn get_device_root(state: State<AppState>) -> Result<String, String> {
 async fn scan_files(app: tauri::AppHandle) -> Result<Vec<FileEntry>, String> {
     let scan_root = scanner::get_scan_root()
         .map_err(|e| format!("Cannot get scan root: {}", e))?;
-    let device_root = scanner::get_device_root()
-        .map_err(|e| format!("Cannot get device root: {}", e))?;
+    let app_root = scanner::get_device_root()
+        .map_err(|e| format!("Cannot get application root: {}", e))?;
 
     {
         let state = app.state::<AppState>();
@@ -86,7 +89,7 @@ async fn scan_files(app: tauri::AppHandle) -> Result<Vec<FileEntry>, String> {
 
     // Phase 1: Fast file listing
     let scan_root_cb = scan_root.clone();
-    let exclude_cb = device_root.clone();
+    let exclude_cb = app_root.clone();
     let app_p1 = app.clone();
     let entries = tokio::task::spawn_blocking(move || {
         let entries = scanner::scan_directory(&scan_root_cb, Some(&exclude_cb))?;
@@ -104,7 +107,7 @@ async fn scan_files(app: tauri::AppHandle) -> Result<Vec<FileEntry>, String> {
     });
 
     // Phase 2: DB diff (incremental — use modification time)
-    let data_dir = device_root.join(".semanticdrive");
+    let data_dir = scan_root.join(".semanticdrive");
     let db = MetadataStore::open(&data_dir)?;
     let paths_map = db.get_paths_map().unwrap_or_default();
     let current_paths: std::collections::HashSet<String> = entries.iter().map(|e| e.path.clone()).collect();
@@ -460,7 +463,7 @@ async fn search_files(
     let tags_clone = tags.clone();
     let parsed = tokio::task::spawn_blocking(move || {
         let state = app_clone.state::<AppState>();
-        let mut llm = state.llm_engine.lock().map_err(|e| e.to_string())?;
+        let llm = state.llm_engine.lock().map_err(|e| e.to_string())?;
 
         // Parse the main query
         let main_parsed = llm.parse_query(&query_clone);
@@ -495,6 +498,7 @@ async fn search_files(
     let entities = parsed.entities.clone();
     let use_en = bilingual;
     let max_results_clamped = max_results.max(20).min(200);
+    let tags_filter = tags.clone(); // clone before move into second spawn_blocking
 
     let results = tokio::task::spawn_blocking(move || {
         // Check cancellation inside the blocking task too
@@ -504,12 +508,34 @@ async fn search_files(
 
         let state = app_clone.state::<AppState>();
         let engine = state.search_engine.read().map_err(|e| e.to_string())?;
-        let files = match state.store.lock().map_err(|e| e.to_string())?.as_ref() {
-            Some(db) => db.get_all_files().unwrap_or_default(),
-            None => Vec::new(),
+        let (files, content_scores) = match state.store.lock().map_err(|e| e.to_string())?.as_ref() {
+            Some(db) => {
+                // Pre-filter at SQL level to reduce vector scoring workload
+                let file_type_refs: Option<Vec<String>> = if file_types.is_empty() { None } else { Some(file_types.clone()) };
+                let time_start = time_range.as_ref().map(|(s, _)| s.as_str());
+                let time_end = time_range.as_ref().map(|(_, e)| e.as_str());
+                let tag_refs: Option<Vec<String>> = if tags_filter.is_empty() { None } else { Some(tags_filter.clone()) };
+                let files = db.get_all_files_filtered(
+                    file_type_refs.as_deref(),
+                    time_start,
+                    time_end,
+                    tag_refs.as_deref(),
+                    None, // no global limit — let scoring decide top-K
+                ).unwrap_or_default();
+                let scores = db.search_content_fts5(&search_query_clone).unwrap_or_default();
+                (files, scores)
+            }
+            None => (Vec::new(), Vec::new()),
         };
+        let content_score_map: std::collections::HashMap<String, f32> = content_scores.into_iter().collect();
+
+        // Do not mix cloud query vectors with fallback-index vectors. A dedicated
+        // cloud re-index job will populate a compatible vector space; until then
+        // both query and documents use the deterministic local fallback.
+        let query_embedding: Option<Vec<f32>> = None;
+
         let mut results: Vec<SearchResult> = if has_keywords || !has_time {
-            engine.search(&search_query_clone, &files, max_results_clamped * 2, use_en)
+            engine.search_with_embedding(&search_query_clone, query_embedding.as_ref(), &files, max_results_clamped * 2, use_en, Some(&content_score_map))
         } else {
             files.iter().map(|f| SearchResult {
                 file_id: f.id.clone(), file_name: f.name.clone(), file_path: f.path.clone(),
@@ -1161,32 +1187,36 @@ async fn chat_send(
             .collect();
         drop(store_lock);
 
-        // Build prompt with both file context and RAG context
-        let prompt = chat::build_chat_prompt(&history, &msg, rag_context.as_deref(), fc.as_deref());
-
-        // Check if LLM is loaded
-        let llm_loaded = {
-            let llm = state.llm_engine.lock().map_err(|e| e.to_string())?;
-            llm.is_loaded()
-        };
-
-        if !llm_loaded {
-            return Err("LLM模型未加载，请先下载模型文件".to_string());
-        }
-
         // Reset cancellation flag
         state.chat_cancelled.store(false, Ordering::Relaxed);
 
-        // Generate with streaming
-        let mut llm = state.llm_engine.lock().map_err(|e| e.to_string())?;
-        let config = GenerateConfig::default();
-        let full_response = llm.generate_streaming(&prompt, &config, Some(&state.chat_cancelled), &mut |token: String| {
-            let _ = app_for_gen.emit("chat-token", ChatTokenEvent {
-                session_id: sid.clone(),
-                token,
-                done: false,
-            });
-        })?;
+        let gen_config = GenerateConfig::default();
+
+        let endpoint = {
+            let config_store = state.config_store.lock().map_err(|e| e.to_string())?;
+            let config = config_store.get_config();
+            let (enabled, endpoint) = chat::resolve_chat_mode(&config);
+            if !enabled {
+                return Err("尚未配置可用的聊天 API。请在设置中填写 API 地址、模型和密钥后重试。".to_string());
+            }
+            endpoint
+        };
+
+        let messages = chat::build_chat_messages_api(
+            &history, &msg, rag_context.as_deref(), fc.as_deref(),
+        );
+        let full_response = api_client::call_chat_completion_streaming_api(
+            &endpoint,
+            &messages,
+            gen_config.temperature,
+            gen_config.max_tokens,
+            Some(&state.chat_cancelled),
+            &mut |token: String| {
+                let _ = app_for_gen.emit("chat-token", ChatTokenEvent {
+                    session_id: sid.clone(), token, done: false,
+                });
+            },
+        )?;
 
         Ok((full_response, assistant_file_refs_json))
     }).await.map_err(|e| format!("Task panicked: {}", e))?;
@@ -1414,10 +1444,38 @@ fn get_file_path_by_id(state: &AppState, file_id: &str) -> Result<String, String
         .ok_or_else(|| format!("文件不存在 (ID: {})", file_id))
 }
 
+/// Resolve a database path while enforcing the current scan-root boundary.
+fn resolve_indexed_path(state: &AppState, file_id: &str, root: &std::path::Path) -> Result<(std::path::PathBuf, String), String> {
+    let relative = get_file_path_by_id(state, file_id)?;
+    let relative_path = std::path::Path::new(&relative);
+    if relative_path.is_absolute() || relative_path.components().any(|component| matches!(component, std::path::Component::Prefix(_))) {
+        return Err("索引中的文件路径无效".to_string());
+    }
+    let full = root.join(relative_path);
+    let canonical_root = std::fs::canonicalize(root).map_err(|e| format!("无法解析扫描目录: {e}"))?;
+    let canonical_file = std::fs::canonicalize(&full).map_err(|e| format!("文件不存在: {relative} ({e})"))?;
+    if !canonical_file.starts_with(&canonical_root) {
+        return Err("文件不在已扫描目录内".to_string());
+    }
+    Ok((canonical_file, relative))
+}
+
+fn validate_new_name(name: &str) -> Result<(), String> {
+    let path = std::path::Path::new(name.trim());
+    if name.trim().is_empty() || path.file_name().and_then(|n| n.to_str()) != Some(name.trim()) || name.contains(['/', '\\']) {
+        return Err("新文件名只能包含文件名，不能包含目录分隔符".to_string());
+    }
+    Ok(())
+}
+
 /// If destination is a directory (ends with `/`, already exists as a dir on disk,
 /// or has no file extension), append the source filename to make a complete target path.
 fn resolve_destination(dest: &str, src: &std::path::Path, root: &std::path::Path) -> Result<std::path::PathBuf, String> {
-    let dst = root.join(dest);
+    let relative = std::path::Path::new(dest);
+    if relative.is_absolute() || relative.components().any(|component| matches!(component, std::path::Component::Prefix(_))) {
+        return Err("目标路径必须位于已扫描目录内".to_string());
+    }
+    let dst = root.join(relative);
     if dest.ends_with('/') || dst.is_dir() || !dest.split('/').last().map_or(false, |s| s.contains('.')) {
         let name = src.file_name()
             .ok_or_else(|| "无法获取源文件名".to_string())?;
@@ -1438,6 +1496,7 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
         // ── Legacy path-based actions (fallback) ──
 
         FileAction::RenameFile { old_path, new_name } => {
+            validate_new_name(&new_name)?;
             let root = scanner::get_scan_root()?;
             let (full_old, old_path) = resolve_action_path(&old_path, &root, &state)?;
             let full_new = full_old.with_file_name(&new_name);
@@ -1490,9 +1549,11 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
         FileAction::ImportFile { source, destination } => {
             let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
-            let src = std::path::PathBuf::from(&source);
+            // Sanitize source to prevent path traversal (LLM may hallucinate paths)
+            let cleaned_source = sanitize_action_path(&source);
+            let src = std::path::PathBuf::from(&cleaned_source);
             if !src.exists() {
-                return Err(format!("文件不存在: {}", source));
+                return Err(format!("文件不存在: {}", cleaned_source));
             }
             let dst = root.join(&destination);
             if let Some(parent) = dst.parent() {
@@ -1501,12 +1562,14 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             }
             std::fs::copy(&src, &dst)
                 .map_err(|e| format!("导入失败: {}", e))?;
-            Ok(format!("已导入「{}」→「{}」", source, destination))
+            Ok(format!("已导入「{}」→「{}」", cleaned_source, destination))
         }
-        FileAction::VaultAddFile { file_path, password } => {
+        FileAction::VaultAddFile { file_path, password: _pw } => {
             let vault_dir = vault::get_vault_dir()?;
-            let key = vault::unlock_vault(&vault_dir, &password)
-                .map_err(|e| format!("密码错误: {}", e))?;
+            let key = {
+                let vk = state.vault_key.lock().map_err(|e| e.to_string())?;
+                vk.ok_or_else(|| "请先在安全空间页面解锁".to_string())?
+            };
             let root = scanner::get_scan_root()?;
             let (full_path, file_path) = resolve_action_path(&file_path, &root, &state)?;
             vault::encrypt_file(&full_path, &vault_dir, &key)
@@ -1528,10 +1591,9 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
         // ── File-ID-based actions (preferred — no path hallucination) ──
 
         FileAction::MoveFileById { file_id, destination } => {
-            let source = get_file_path_by_id(&state, &file_id)?;
-            let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
-            let src = root.join(&source);
+            let (src, source) = resolve_indexed_path(&state, &file_id, &root)?;
+            let destination = sanitize_action_path(&destination);
             let dst = resolve_destination(&destination, &src, &root)?;
             if !src.exists() {
                 return Err(format!("文件不存在: {}", source));
@@ -1558,10 +1620,9 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             Ok(format!("已移动「{}」→「{}」", source, display))
         }
         FileAction::CopyFileById { file_id, destination } => {
-            let source = get_file_path_by_id(&state, &file_id)?;
-            let destination = sanitize_action_path(&destination);
             let root = scanner::get_scan_root()?;
-            let src = root.join(&source);
+            let (src, source) = resolve_indexed_path(&state, &file_id, &root)?;
+            let destination = sanitize_action_path(&destination);
             let dst = resolve_destination(&destination, &src, &root)?;
             if !src.exists() {
                 return Err(format!("文件不存在: {}", source));
@@ -1584,9 +1645,8 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             Ok(format!("已复制「{}」→「{}」", source, display))
         }
         FileAction::DeleteFileById { file_id } => {
-            let file_path = get_file_path_by_id(&state, &file_id)?;
             let root = scanner::get_scan_root()?;
-            let full = root.join(&file_path);
+            let (full, file_path) = resolve_indexed_path(&state, &file_id, &root)?;
             if !full.exists() {
                 return Err(format!("文件不存在: {}", file_path));
             }
@@ -1604,9 +1664,9 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             Ok(format!("已删除: {}", file_path))
         }
         FileAction::RenameFileById { file_id, new_name } => {
-            let old_path = get_file_path_by_id(&state, &file_id)?;
+            validate_new_name(&new_name)?;
             let root = scanner::get_scan_root()?;
-            let full_old = root.join(&old_path);
+            let (full_old, old_path) = resolve_indexed_path(&state, &file_id, &root)?;
             if !full_old.exists() {
                 return Err(format!("文件不存在: {}", old_path));
             }
@@ -1622,19 +1682,96 @@ fn execute_file_action(action_json: String, state: State<AppState>) -> Result<St
             }
             Ok(format!("已重命名「{}」→「{}」", old_path, new_name))
         }
-        FileAction::VaultAddFileById { file_id, password } => {
-            let file_path = get_file_path_by_id(&state, &file_id)?;
+        FileAction::VaultAddFileById { file_id, password: _pw } => {
             let vault_dir = vault::get_vault_dir()?;
-            let key = vault::unlock_vault(&vault_dir, &password)
-                .map_err(|e| format!("密码错误: {}", e))?;
+            let key = {
+                let vk = state.vault_key.lock().map_err(|e| e.to_string())?;
+                vk.ok_or_else(|| "请先在安全空间页面解锁".to_string())?
+            };
             let root = scanner::get_scan_root()?;
-            let full_path = root.join(&file_path);
+            let (full_path, relative) = resolve_indexed_path(&state, &file_id, &root)?;
             if !full_path.exists() {
-                return Err(format!("文件不存在: {}", file_path));
+                return Err(format!("文件不存在: {}", relative));
             }
             vault::encrypt_file(&full_path, &vault_dir, &key)
                 .map_err(|e| format!("加密失败: {}", e))?;
-            Ok(format!("已加密添加到安全空间: {}", file_path))
+            Ok(format!("已加密添加到安全空间: {}", relative))
+        }
+        FileAction::SearchFiles { query } => Ok(format!("搜索: {}", query)),
+        FileAction::ClassifyFiles => Ok("已打开文件分类页面".to_string()),
+        FileAction::FindDuplicates => Ok("已打开去重检测页面".to_string()),
+        FileAction::ImportFileById { file_id, destination } => {
+            let root = scanner::get_scan_root()?;
+            let (src, source) = resolve_indexed_path(&state, &file_id, &root)?;
+            let destination = sanitize_action_path(&destination);
+            let dst = resolve_destination(&destination, &src, &root)?;
+            if !src.exists() {
+                return Err(format!("文件不存在: {}", source));
+            }
+            if let Some(parent) = dst.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("创建目录失败: {}", e))?;
+            }
+            std::fs::copy(&src, &dst)
+                .map_err(|e| format!("导入失败: {}", e))?;
+            Ok(format!("已导入「{}」→「{}」", source, destination))
+        }
+        FileAction::OpenFileById { file_id } => {
+            let root = scanner::get_scan_root()?;
+            let (full, file_path) = resolve_indexed_path(&state, &file_id, &root)?;
+            if !full.exists() {
+                return Err(format!("文件不存在: {}", file_path));
+            }
+            open::that(full).map_err(|e| format!("打开失败: {}", e))?;
+            Ok(format!("已打开: {}", file_path))
+        }
+        FileAction::OpenFileLocationById { file_id } => {
+            let root = scanner::get_scan_root()?;
+            let (full, file_path) = resolve_indexed_path(&state, &file_id, &root)?;
+            if !full.exists() {
+                return Err(format!("文件不存在: {}", file_path));
+            }
+            #[cfg(target_os = "windows")]
+            {
+                std::process::Command::new("explorer")
+                    .arg(format!("/select,{}", full.display()))
+                    .spawn()
+                    .map_err(|e| format!("打开位置失败: {}", e))?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let parent = full.parent().ok_or("无父目录")?;
+                open::that(parent).map_err(|e| format!("打开位置失败: {}", e))?;
+            }
+            Ok(format!("已打开位置: {}", file_path))
+        }
+        FileAction::AddFileTags { file_id, tags } => {
+            let store_lock = state.store.lock().map_err(|e| e.to_string())?;
+            let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
+            // Get existing tags, merge, and set
+            let existing = db.get_file_custom_tags(&file_id).unwrap_or_default();
+            let mut merged = existing.clone();
+            for tag in &tags {
+                if !merged.contains(tag) { merged.push(tag.clone()); }
+            }
+            db.set_file_custom_tags(&file_id, &merged)
+                .map_err(|e| format!("添加标签失败: {}", e))?;
+            for tag in &tags {
+                let _ = db.upsert_user_tag(tag);
+            }
+            Ok(format!("已添加标签: {}", tags.join("、")))
+        }
+        FileAction::RemoveFileTags { file_id, tags } => {
+            let store_lock = state.store.lock().map_err(|e| e.to_string())?;
+            let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
+            let existing = db.get_file_custom_tags(&file_id).unwrap_or_default();
+            let filtered: Vec<String> = existing.into_iter()
+                .filter(|t| !tags.contains(t))
+                .collect();
+            db.set_file_custom_tags(&file_id, &filtered)
+                .map_err(|e| format!("移除标签失败: {}", e))?;
+            let _ = db.cleanup_orphan_tags();
+            Ok(format!("已移除标签: {}", tags.join("、")))
         }
     }
 }
@@ -1711,74 +1848,84 @@ async fn find_duplicates(app: tauri::AppHandle) -> Result<Vec<DuplicateGroup>, S
     .map_err(|e| format!("Task panicked: {}", e))?
 }
 
-// ── Model Management Commands ──
+// ── Cloud configuration commands ──
 
 #[tauri::command]
-fn get_models_status() -> Result<Vec<ModelInfo>, String> {
-    ai::model_manager::get_models_status()
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct ModelLoadStatus { pub id: String, pub loaded: bool }
-
-#[tauri::command]
-fn get_model_load_status(state: State<AppState>) -> Result<Vec<ModelLoadStatus>, String> {
-    let search = state.search_engine.read().map_err(|e| e.to_string())?;
-    let zh_loaded = search.embedding_engine().is_loaded();
-    let en_loaded = search.en_embedding_engine()
-        .map(|e| e.is_loaded())
-        .unwrap_or(false);
-    let llm_loaded = state.llm_engine.lock().map_err(|e| e.to_string())?.is_loaded();
-    Ok(vec![
-        ModelLoadStatus { id: "bge-small-zh".to_string(), loaded: zh_loaded },
-        ModelLoadStatus { id: "bge-base-zh".to_string(), loaded: zh_loaded },
-        ModelLoadStatus { id: "bge-base-en".to_string(), loaded: en_loaded },
-        ModelLoadStatus { id: "qwen2.5-0.5b".to_string(), loaded: llm_loaded },
-        ModelLoadStatus { id: "qwen2.5-1.5b".to_string(), loaded: llm_loaded },
-        ModelLoadStatus { id: "qwen2.5-7b".to_string(), loaded: llm_loaded },
-    ])
+fn get_config(state: State<AppState>) -> Result<AppConfig, String> {
+    let cs = state.config_store.lock().map_err(|e| e.to_string())?;
+    Ok(cs.get_config())
 }
 
 #[tauri::command]
-async fn download_model_file(app: tauri::AppHandle, model_id: String) -> Result<String, String> {
-    let app_for_cb = app.clone();
-    let app_for_post = app.clone();
-    let model_id_cb = model_id.clone();
-    let path = tokio::task::spawn_blocking(move || {
-        let cb = move |p: ai::model_manager::DownloadProgress| {
-            let _ = app_for_cb.emit("download-progress", &p);
-        };
-        ai::model_manager::download_model(&model_id_cb, cb)
-    }).await.map_err(|e| format!("Task failed: {}", e))??;
-    let path_clone = path.clone();
-    tokio::task::spawn_blocking(move || {
-        let state = app_for_post.state::<AppState>();
-        match model_id.as_str() {
-            "bge-small-zh" | "bge-base-zh" => {
-                if let Ok(mut engine) = state.search_engine.write() {
-                    if let Err(e) = engine.load_embedding_model(&path_clone) {
-                        log::error!("Failed to load embedding: {}", e);
-                    }
-                }
-            }
-            "bge-base-en" => {
-                if let Ok(mut engine) = state.search_engine.write() {
-                    if let Err(e) = engine.load_en_model(&path_clone) {
-                        log::error!("Failed to load BGE-base-en: {}", e);
-                    }
-                }
-            }
-            "qwen2.5-0.5b" | "qwen2.5-1.5b" | "qwen2.5-7b" => {
-                if let Ok(mut engine) = state.llm_engine.lock() {
-                    if let Err(e) = engine.load(&path_clone) {
-                        log::error!("Failed to load LLM: {}", e);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }).await.map_err(|e| format!("Task failed: {}", e))?;
-    Ok(path.to_string_lossy().to_string())
+fn update_config(state: State<AppState>, config: AppConfig) -> Result<(), String> {
+    let mut cs = state.config_store.lock().map_err(|e| e.to_string())?;
+    cs.update_config(config)
+}
+
+#[tauri::command]
+fn get_scan_root_path() -> Result<String, String> {
+    scanner::get_scan_root().map(|path| path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn set_scan_root(state: State<AppState>, path: Option<String>) -> Result<String, String> {
+    let selected = path.map(std::path::PathBuf::from);
+    let canonical = scanner::set_scan_root_override(selected)?;
+    let mut config_store = state.config_store.lock().map_err(|e| e.to_string())?;
+    config_store.set_scan_root(canonical.as_ref().map(|value| value.to_string_lossy().to_string()))?;
+    Ok(canonical.unwrap_or(scanner::get_scan_root()?).to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn set_ai_mode(state: State<AppState>, mode: String) -> Result<(), String> {
+    let mut cs = state.config_store.lock().map_err(|e| e.to_string())?;
+    cs.set_ai_mode(&mode)
+}
+
+#[tauri::command]
+fn set_embedding_api_key(state: State<AppState>, key: String) -> Result<(), String> {
+    let mut cs = state.config_store.lock().map_err(|e| e.to_string())?;
+    cs.set_embedding_api_key(&key)
+}
+
+#[tauri::command]
+fn set_chat_api_key(state: State<AppState>, key: String) -> Result<(), String> {
+    let mut cs = state.config_store.lock().map_err(|e| e.to_string())?;
+    cs.set_chat_api_key(&key)
+}
+
+#[tauri::command]
+fn test_embedding_connection(state: State<AppState>) -> Result<String, String> {
+    let cs = state.config_store.lock().map_err(|e| e.to_string())?;
+    let config = cs.get_config();
+    let ep = api_client::ApiEndpointConfig {
+        base_url: config.embedding_api.base_url.clone(),
+        api_key: config.embedding_api.api_key.clone(),
+        model: config.embedding_api.model.clone(),
+        enabled: true, // force enabled for testing
+        timeout_secs: config.embedding_api.timeout_secs,
+    };
+    match api_client::test_embedding_connection(&ep) {
+        Ok(()) => Ok("连接成功！嵌入API工作正常。".to_string()),
+        Err(e) => Err(format!("连接失败: {}", e)),
+    }
+}
+
+#[tauri::command]
+fn test_chat_connection(state: State<AppState>) -> Result<String, String> {
+    let cs = state.config_store.lock().map_err(|e| e.to_string())?;
+    let config = cs.get_config();
+    let ep = api_client::ApiEndpointConfig {
+        base_url: config.chat_api.base_url.clone(),
+        api_key: config.chat_api.api_key.clone(),
+        model: config.chat_api.model.clone(),
+        enabled: true,
+        timeout_secs: config.chat_api.timeout_secs,
+    };
+    match api_client::test_chat_connection(&ep) {
+        Ok(()) => Ok("连接成功！对话API工作正常。".to_string()),
+        Err(e) => Err(format!("连接失败: {}", e)),
+    }
 }
 
 // ── Vault Commands ──
@@ -1790,9 +1937,14 @@ fn vault_configure(password: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn vault_unlock(password: String) -> Result<bool, String> {
+fn vault_unlock(password: String, state: State<AppState>) -> Result<bool, String> {
     let vault_dir = vault::get_vault_dir()?;
-    match vault::unlock_vault(&vault_dir, &password) { Ok(_) => Ok(true), Err(e) => Err(e) }
+    let key = vault::unlock_vault(&vault_dir, &password)?;
+    // Store key in memory for agent-initiated vault operations
+    if let Ok(mut vk) = state.vault_key.lock() {
+        *vk = Some(key);
+    }
+    Ok(true)
 }
 
 #[tauri::command]
@@ -1802,9 +1954,16 @@ fn vault_is_configured() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn vault_add_file(file_path: String, password: String) -> Result<vault::VaultFile, String> {
+fn vault_add_file(file_path: String, password: String, state: State<AppState>) -> Result<vault::VaultFile, String> {
     let vault_dir = vault::get_vault_dir()?;
-    let key = vault::unlock_vault(&vault_dir, &password)?;
+    // Try session key first, fall back to password
+    let key = {
+        let vk = state.vault_key.lock().map_err(|e| e.to_string())?;
+        match *vk {
+            Some(k) => k,
+            None => vault::unlock_vault(&vault_dir, &password)?,
+        }
+    };
     let root = scanner::get_scan_root()?;
     let full_path = root.join(&file_path);
     let file_entry = vault::encrypt_file(&full_path, &vault_dir, &key)?;
@@ -1813,12 +1972,26 @@ fn vault_add_file(file_path: String, password: String) -> Result<vault::VaultFil
 }
 
 #[tauri::command]
-fn vault_add_external_file(path: String, password: String) -> Result<vault::VaultFile, String> {
+fn vault_add_external_file(path: String, password: String, state: State<AppState>) -> Result<vault::VaultFile, String> {
     let vault_dir = vault::get_vault_dir()?;
-    let key = vault::unlock_vault(&vault_dir, &password)?;
+    let key = {
+        let vk = state.vault_key.lock().map_err(|e| e.to_string())?;
+        match *vk {
+            Some(k) => k,
+            None => vault::unlock_vault(&vault_dir, &password)?,
+        }
+    };
     let full_path = std::path::PathBuf::from(&path);
     if !full_path.exists() {
         return Err(format!("File not found: {}", path));
+    }
+    let scan_root = scanner::get_scan_root()?;
+    let canonical_path = std::fs::canonicalize(&full_path)
+        .map_err(|e| format!("无法解析文件路径: {}", e))?;
+    let canonical_root = std::fs::canonicalize(&scan_root)
+        .map_err(|e| format!("无法解析扫描根路径: {}", e))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err("只能添加设备内的文件".to_string());
     }
     let file_entry = vault::encrypt_file(&full_path, &vault_dir, &key)?;
     vault_update_index(&vault_dir, &key, &file_entry)?;
@@ -1917,6 +2090,12 @@ fn stop_chat(state: State<AppState>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let config_store = ConfigStore::load().unwrap_or_else(|e| {
+        log::error!("Failed to load config: {}, using defaults", e);
+        // Create a fallback with default config
+        ConfigStore::load().expect("Fatal: cannot create config store")
+    });
+
     tauri::Builder::default()
         .manage(AppState {
             store: Mutex::new(None),
@@ -1928,6 +2107,8 @@ pub fn run() {
             duplicate_cache: Mutex::new(None),
             search_cancelled: Mutex::new(false),
             chat_cancelled: AtomicBool::new(false),
+            config_store: Mutex::new(config_store),
+            vault_key: Mutex::new(None),
         })
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -1939,60 +2120,16 @@ pub fn run() {
             #[cfg(not(mobile))]
             {
                 let state = app.state::<AppState>();
-                // Try bge-base-zh first, fall back to bge-small-zh
-                if let Ok(Some(path)) = ai::model_manager::get_model_path("bge-base-zh") {
-                    if let Ok(mut engine) = state.search_engine.write() {
-                        if let Err(e) = engine.load_embedding_model(&path) {
-                            log::warn!("BGE-base load failed, trying small: {}", e);
+                if let Ok(config_store) = state.config_store.lock() {
+                    if let Some(root) = config_store.get_config().scan_root.as_ref() {
+                        if let Err(error) = scanner::set_scan_root_override(Some(std::path::PathBuf::from(root))) {
+                            log::warn!("Saved scan root is unavailable: {error}");
                         }
                     }
                 }
-                if !state.search_engine.read().map(|e| e.embedding_engine().is_loaded()).unwrap_or(false) {
-                    if let Ok(Some(path)) = ai::model_manager::get_model_path("bge-small-zh") {
-                        if let Ok(mut engine) = state.search_engine.write() {
-                            if let Err(e) = engine.load_embedding_model(&path) {
-                                log::warn!("BGE-small load failed: {}", e);
-                            }
-                        }
-                    }
-                }
-                // Try BGE-base-en for English embedding model
-                if let Ok(Some(path)) = ai::model_manager::get_model_path("bge-base-en") {
-                    if let Ok(mut engine) = state.search_engine.write() {
-                        if let Err(e) = engine.load_en_model(&path) {
-                            log::warn!("BGE-base-en load failed: {}", e);
-                        }
-                    }
-                }
-
-                // Try qwen2.5-7b first, fall back to 1.5b, then 0.5b
-                if let Ok(Some(path)) = ai::model_manager::get_model_path("qwen2.5-7b") {
-                    if let Ok(mut engine) = state.llm_engine.lock() {
-                        if let Err(e) = engine.load(&path) {
-                            log::warn!("Qwen7B load failed, trying 1.5B: {}", e);
-                        }
-                    }
-                }
-                if !state.llm_engine.lock().map(|e| e.is_loaded()).unwrap_or(false) {
-                    if let Ok(Some(path)) = ai::model_manager::get_model_path("qwen2.5-1.5b") {
-                        if let Ok(mut engine) = state.llm_engine.lock() {
-                            if let Err(e) = engine.load(&path) {
-                                log::warn!("Qwen1.5B load failed, trying 0.5B: {}", e);
-                            }
-                        }
-                    }
-                }
-                if !state.llm_engine.lock().map(|e| e.is_loaded()).unwrap_or(false) {
-                    if let Ok(Some(path)) = ai::model_manager::get_model_path("qwen2.5-0.5b") {
-                        if let Ok(mut engine) = state.llm_engine.lock() {
-                            if let Err(e) = engine.load(&path) {
-                                log::warn!("Qwen0.5B load failed: {}", e);
-                            }
-                        }
-                    }
-                }
+                // API-first build: do not download or load local model weights at startup.
                 // Open existing database so we don't require re-scan on restart
-                if let Ok(root) = scanner::get_device_root() {
+                if let Ok(root) = scanner::get_scan_root() {
                     let data_dir = root.join(".semanticdrive");
                     if data_dir.join("metadata.db").exists() {
                         if let Ok(db) = MetadataStore::open(&data_dir) {
@@ -2039,7 +2176,6 @@ pub fn run() {
             get_device_root, scan_files, get_files, get_file_count, get_scan_progress, compute_file_hash,
             search_files, cancel_search, index_file_content, get_indexed_count,
             classify_files, find_duplicates,
-            get_models_status, get_model_load_status, download_model_file,
             open_file_location, open_file, open_folder,
             get_files_by_category, get_files_by_tag,
             upsert_user_tag, get_user_tags, get_top_user_tags, set_file_custom_tags, get_file_custom_tags, get_files_custom_tags_batch,
@@ -2047,6 +2183,8 @@ pub fn run() {
             create_chat_session, list_chat_sessions, get_chat_messages, delete_chat_session, rename_chat_session, chat_send, stop_chat,
             execute_file_action,
             get_directory, rename_file, delete_file, move_file, copy_file, import_file, create_directory,
+            get_config, update_config, get_scan_root_path, set_scan_root, set_ai_mode, set_embedding_api_key, set_chat_api_key,
+            test_embedding_connection, test_chat_connection,
             vault_configure, vault_unlock, vault_is_configured,
             vault_add_file, vault_add_external_file, vault_open_file, vault_delete_file,
             vault_list_files, vault_remove_file,

@@ -1,14 +1,12 @@
 [package]
 name = "semantic-drive-ai"
-version = "0.1.0"
-description = "Semantic Drive AI - Portable semantic file manager"
+version = "0.2.0"
+description = "API-first cross-platform AI file manager"
 authors = ["Semantic Drive AI Team"]
 license = "MIT"
 repository = ""
 edition = "2021"
 rust-version = "1.77.2"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 name = "app_lib"
@@ -24,50 +22,21 @@ log = "0.4"
 tauri = { version = "2.11.1", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
-
-# File scanner & watcher
 walkdir = "2"
 notify = { version = "7", features = ["macos_kqueue"] }
-notify-debouncer-mini = "0.5"
-
-# Database
 rusqlite = { version = "0.32", features = ["bundled"] }
-
-# Hashing & time
 blake3 = "1"
 chrono = { version = "0.4", features = ["serde"] }
-
-# MIME detection
 mime_guess = "2"
-
-# File size formatting
 humansize = "2"
-
-# Tokio async runtime
 tokio = { version = "1", features = ["full"] }
-
-# Regex for time pattern parsing
 regex = "1"
-
-# Content extraction
 zip = "2"
 quick-xml = { version = "0.37", features = ["serialize"] }
 calamine = "0.26"
 lopdf = "0.34"
-
-# AI / ML (pure Rust)
-candle-core = "0.9"
-candle-nn = "0.9"
-candle-transformers = "0.9"
-tokenizers = "0.21"
-ndarray = "0.16"
-rayon = "1"
-hf-hub = "0.4"
-
-# HTTP downloads (model auto-download) — rustls avoids native TLS issues on Windows GNU
+# OpenAI-compatible cloud APIs, compiled with rustls for portable TLS.
 ureq = { version = "3", features = ["rustls"] }
-
-# Encryption vault
 aes-gcm = "0.10"
 argon2 = "0.5"
 rand = "0.8"
@@ -76,3 +45,4 @@ sha2 = "0.10"
 uuid = { version = "1", features = ["v4"] }
 byteorder = "1.5"
 open = "5"
+rayon = "1"

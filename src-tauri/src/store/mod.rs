@@ -1,3 +1,5 @@
+pub mod config_store;
+
 use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -94,9 +96,50 @@ impl MetadataStore {
                 FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE
             );
 
-            CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);",
+            CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+
+            -- FTS5 virtual table for full-text search on content_text
+            CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+                content_text,
+                content='files',
+                content_rowid='rowid',
+                tokenize='unicode61'
+            );
+
+            -- Triggers to keep FTS5 in sync with files table
+            CREATE TRIGGER IF NOT EXISTS files_ai AFTER INSERT ON files BEGIN
+                INSERT INTO files_fts(rowid, content_text) VALUES (new.rowid, new.content_text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS files_ad AFTER DELETE ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, content_text) VALUES('delete', old.rowid, old.content_text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS files_au AFTER UPDATE ON files BEGIN
+                INSERT INTO files_fts(files_fts, rowid, content_text) VALUES('delete', old.rowid, old.content_text);
+                INSERT INTO files_fts(rowid, content_text) VALUES (new.rowid, new.content_text);
+            END;",
         )
         .map_err(|e| format!("Cannot create tables: {}", e))?;
+
+        // Populate FTS5 for existing rows if empty (safe to run repeatedly; only inserts missing)
+        let fts_count: u64 = conn
+            .query_row("SELECT COALESCE((SELECT COUNT(*) FROM files_fts), 0)", [], |row| row.get(0))
+            .unwrap_or(0);
+        let file_count: u64 = conn
+            .query_row("SELECT COUNT(*) FROM files WHERE content_text IS NOT NULL", [], |row| row.get(0))
+            .unwrap_or(0);
+        if fts_count < file_count {
+            log::info!("Populating FTS5 index ({} files)", file_count - fts_count);
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO files_fts(rowid, content_text)
+                 SELECT f.rowid, f.content_text FROM files f
+                 WHERE f.content_text IS NOT NULL
+                 AND f.rowid NOT IN (SELECT rowid FROM files_fts);",
+            )
+            .map_err(|e| format!("Cannot populate FTS5: {}", e))?;
+        }
+
         Ok(())
     }
 
@@ -155,6 +198,83 @@ impl MetadataStore {
 
         let entries = stmt
             .query_map([], |row| {
+                Ok(FileEntry {
+                    id: row.get(0)?,
+                    path: row.get(1)?,
+                    name: row.get(2)?,
+                    extension: row.get(3)?,
+                    mime_type: row.get(4)?,
+                    size: row.get(5)?,
+                    hash: row.get(6)?,
+                    modified: row.get(7)?,
+                    created: row.get(8)?,
+                    indexed_at: row.get(9)?,
+                })
+            })
+            .map_err(|e| format!("Query map error: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok(entries)
+    }
+
+    /// Get files with optional SQL-level filters to reduce load before scoring.
+    /// All filters are ANDed together. Empty/None filters are ignored.
+    #[allow(clippy::too_many_arguments)]
+    pub fn get_all_files_filtered(
+        &self,
+        extensions: Option<&[String]>,
+        time_start: Option<&str>,
+        time_end: Option<&str>,
+        tags: Option<&[String]>,
+        limit: Option<usize>,
+    ) -> Result<Vec<FileEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut sql = String::from(
+            "SELECT id, path, name, extension, mime_type, size, hash, modified, created, indexed_at FROM files WHERE 1=1"
+        );
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(exts) = extensions {
+            if !exts.is_empty() {
+                let placeholders: Vec<String> = exts.iter().enumerate()
+                    .map(|(i, _)| format!("?{}", param_values.len() + i + 1))
+                    .collect();
+                sql.push_str(&format!(" AND extension IN ({})", placeholders.join(",")));
+                for ext in exts {
+                    param_values.push(Box::new(ext.clone()));
+                }
+            }
+        }
+
+        if let Some(start) = time_start {
+            sql.push_str(&format!(" AND modified >= ?{}", param_values.len() + 1));
+            param_values.push(Box::new(start.to_string()));
+        }
+
+        if let Some(end) = time_end {
+            sql.push_str(&format!(" AND modified <= ?{}", param_values.len() + 1));
+            param_values.push(Box::new(end.to_string()));
+        }
+
+        if let Some(tags_list) = tags {
+            for tag in tags_list {
+                sql.push_str(&format!(" AND tags LIKE ?{}", param_values.len() + 1));
+                param_values.push(Box::new(format!("%{}%", tag)));
+            }
+        }
+
+        sql.push_str(" ORDER BY name");
+
+        if let Some(lim) = limit {
+            sql.push_str(&format!(" LIMIT {}", lim));
+        }
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("Query error: {}", e))?;
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+
+        let entries = stmt
+            .query_map(param_refs.as_slice(), |row| {
                 Ok(FileEntry {
                     id: row.get(0)?,
                     path: row.get(1)?,
@@ -874,9 +994,63 @@ impl MetadataStore {
         }
         Ok(result)
     }
+
+    /// Full-text search on file content using FTS5.
+    /// Returns Vec of (file_id, bm25_rank) sorted by relevance (most relevant first).
+    /// Lower rank = better match. Returns empty Vec if query fails or no matches.
+    pub fn search_content_fts5(&self, query: &str) -> Result<Vec<(String, f32)>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+        // Sanitize query for FTS5: escape special chars, wrap in double quotes per term
+        let fts_query: String = query
+            .split_whitespace()
+            .filter(|t| !t.is_empty())
+            .map(|t| {
+                let escaped = t.replace('"', "");
+                // CJK characters need to be queried as individual chars for unicode61 tokenizer
+                if escaped.chars().any(|c| c >= '\u{4e00}') {
+                    // For CJK, use AND of individual tokens for better precision
+                    let chars: Vec<String> = escaped.chars()
+                        .filter(|c| *c >= '\u{4e00}')
+                        .map(|c| format!("\"{}\"", c))
+                        .collect();
+                    if chars.is_empty() { format!("\"{}\"", escaped) }
+                    else { chars.join(" AND ") }
+                } else {
+                    format!("\"{}\"", escaped)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" AND ");
+
+        if fts_query.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let sql = "SELECT f.id, rank FROM files_fts JOIN files f ON f.rowid = files_fts.rowid WHERE files_fts MATCH ?1 ORDER BY rank";
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                log::warn!("FTS5 prepare error: {}", e);
+                return Ok(Vec::new());
+            }
+        };
+
+        let results = match stmt.query_map(params![fts_query], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, f32>(1)?))
+        }) {
+            Ok(rows) => rows.filter_map(|r| r.ok()).collect(),
+            Err(e) => {
+                log::warn!("FTS5 query error (query={}): {}", fts_query, e);
+                Vec::new()
+            }
+        };
+
+        Ok(results)
+    }
 }
 
 /// Get the path for app data directory on the storage device.
 pub fn get_app_data_dir() -> Result<PathBuf, String> {
-    crate::scanner::get_device_root().map(|p| p.join(".semanticdrive"))
+    crate::scanner::get_scan_root().map(|p| p.join(".semanticdrive"))
 }

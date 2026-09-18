@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import { Tag, RefreshCw, FolderOpen, ExternalLink, ArrowLeft, Search } from 'lucide-react'
@@ -312,46 +313,46 @@ export default function FileClassify() {
                 )}
 
                 {!loadingFiles && drillDownFiles.length > 0 && (
-                  <div className="space-y-1.5 max-h-80 overflow-y-auto">
-                    {drillDownFiles.map((f, idx) => (
-                      <div
-                        key={f.id}
-                        className="flex items-center justify-between p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors animate-slide-up"
-                        style={{ animationDelay: `${idx * 40}ms` }}
-                      >
-                        <div className="flex items-center gap-2 min-w-0 flex-1">
-                          <span className="shrink-0">{getFileIcon(f.name, f.extension)}</span>
-                          <div className="min-w-0">
-                            <div className="text-sm truncate">{f.name}</div>
-                            <div className="text-xs text-silver-500 truncate">{f.path}</div>
+                  <div className="h-80">
+                    <Virtuoso
+                      data={drillDownFiles}
+                      computeItemKey={(_, f) => f.id}
+                      itemContent={(_index, f) => (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-white/5 hover:bg-white/10 transition-colors mx-0.5 mb-1.5">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <span className="shrink-0">{getFileIcon(f.name, f.extension)}</span>
+                            <div className="min-w-0">
+                              <div className="text-sm truncate">{f.name}</div>
+                              <div className="text-xs text-silver-500 truncate">{f.path}</div>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0 ml-3">
+                            <span className="text-xs text-silver-500">{formatSize(f.size)}</span>
+                            <button
+                              onClick={() => handleOpenLocation(f.path)}
+                              className="p-1 rounded text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
+                              title="打开文件位置"
+                            >
+                              <FolderOpen size={13} />
+                            </button>
+                            <button
+                              onClick={() => handleOpenFile(f.path)}
+                              className="p-1 rounded text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
+                              title="打开文件"
+                            >
+                              <ExternalLink size={13} />
+                            </button>
+                            <button
+                              onClick={() => handleSearchView(f.path)}
+                              className="p-1 rounded text-silver-400 hover:text-accent-teal hover:bg-white/10 transition-all"
+                              title="在搜索中查看"
+                            >
+                              <Search size={13} />
+                            </button>
                           </div>
                         </div>
-                        <div className="flex items-center gap-1.5 shrink-0 ml-3">
-                          <span className="text-xs text-silver-500">{formatSize(f.size)}</span>
-                          <button
-                            onClick={() => handleOpenLocation(f.path)}
-                            className="p-1 rounded text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
-                            title="打开文件位置"
-                          >
-                            <FolderOpen size={13} />
-                          </button>
-                          <button
-                            onClick={() => handleOpenFile(f.path)}
-                            className="p-1 rounded text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
-                            title="打开文件"
-                          >
-                            <ExternalLink size={13} />
-                          </button>
-                          <button
-                            onClick={() => handleSearchView(f.path)}
-                            className="p-1 rounded text-silver-400 hover:text-accent-teal hover:bg-white/10 transition-all"
-                            title="在搜索中查看"
-                          >
-                            <Search size={13} />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      )}
+                    />
                   </div>
                 )}
               </div>

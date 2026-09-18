@@ -612,7 +612,7 @@ export default function SmartSearch() {
           {searching ? (
             <button
               onClick={async () => {
-                try { await invoke('cancel_search') } catch {}
+                try { await invoke('cancel_search') } catch (error) { console.debug('Search cancellation failed', error) }
                 setSearching(false)
               }}
               className="glass px-4 py-3 rounded-xl text-sm font-medium text-red-400 hover:bg-red-500/10 transition-all flex items-center gap-2"

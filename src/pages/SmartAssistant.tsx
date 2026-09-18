@@ -225,7 +225,9 @@ function ChatMessageBubble({ msg }: { msg: ChatMessage }) {
 
   const handleSearchView = useCallback((filePath: string) => {
     useAppStore.getState().setPage('search')
-    useAppStore.getState().setSearchQuery(filePath)
+    // Extract filename from path for a cleaner search query
+    const fileName = filePath.split('/').pop()?.split('\\').pop() || filePath
+    useAppStore.getState().setSearchQuery(fileName)
   }, [])
 
   return (
@@ -644,30 +646,62 @@ function ChatInput({ onSend, onStop, streaming }: {
 
 // ── ActionConfirmBar ──
 
-function describeAction(action: FileAction): string {
+function describeAction(action: FileAction, fileMap?: Record<string, { name: string; path: string }>): string {
+  const fileName = (id: string) => {
+    const f = fileMap?.[id]
+    return f ? `「${f.name}」` : `(ID: ${id.slice(0, 8)}…)`
+  }
   switch (action.cmd) {
     case 'rename_file': return `重命名「${action.params.old_path}」→「${action.params.new_name}」`
     case 'delete_file': return `删除「${action.params.file_path}」`
     case 'move_file': return `移动「${action.params.source}」→「${action.params.destination}」`
     case 'copy_file': return `复制「${action.params.source}」→「${action.params.destination}」`
     case 'import_file': return `导入「${action.params.source}」→「${action.params.destination}」`
-    case 'vault_add_file': return `加密添加到安全空间: 「${action.params.file_path}」`
-    case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」到文件`
-    case 'move_file_by_id': return `移动文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
-    case 'copy_file_by_id': return `复制文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
-    case 'delete_file_by_id': return `删除文件（ID: ${action.params.file_id}）`
-    case 'rename_file_by_id': return `重命名文件（ID: ${action.params.file_id}）→「${action.params.new_name}」`
-    case 'vault_add_file_by_id': return `加密添加到安全空间（ID: ${action.params.file_id}）`
+    case 'vault_add_file': return `加密「${action.params.file_path}」`
+    case 'vault_add_file_by_id': return `加密 ${fileName(action.params.file_id)}`
+    case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」→ ${fileName(action.params.file_id)}`
+    case 'move_file_by_id': return `移动 ${fileName(action.params.file_id)} →「${action.params.destination}」`
+    case 'copy_file_by_id': return `复制 ${fileName(action.params.file_id)} →「${action.params.destination}」`
+    case 'delete_file_by_id': return `删除 ${fileName(action.params.file_id)}`
+    case 'rename_file_by_id': return `重命名 ${fileName(action.params.file_id)} →「${action.params.new_name}」`
+    case 'search_files': return `搜索「${action.params.query}」`
+    case 'import_file_by_id': return `导入 ${fileName(action.params.file_id)} →「${action.params.destination}」`
+    case 'open_file_by_id': return `打开 ${fileName(action.params.file_id)}`
+    case 'open_file_location_by_id': return `打开位置 ${fileName(action.params.file_id)}`
+    case 'add_file_tags': return `添加标签「${action.params.tags.join('、')}」→ ${fileName(action.params.file_id)}`
+    case 'remove_file_tags': return `移除标签「${action.params.tags.join('、')}」从 ${fileName(action.params.file_id)}`
+    case 'classify_files': return `打开文件分类页面`
+    case 'find_duplicates': return `打开去重检测页面`
   }
 }
 
+function actionRisk(action: FileAction): 'high' | 'medium' | 'low' {
+  switch (action.cmd) {
+    case 'delete_file': case 'delete_file_by_id': case 'vault_add_file': case 'vault_add_file_by_id':
+      return 'high'
+    case 'move_file': case 'move_file_by_id': case 'rename_file': case 'rename_file_by_id': case 'import_file': case 'import_file_by_id':
+      return 'medium'
+    default:
+      return 'low'
+  }
+}
+
+const RISK_STYLE = {
+  high:  { bg: 'bg-red-500/10', border: 'border-red-500/20', text: 'text-red-400', dot: 'bg-red-400' },
+  medium:{ bg: 'bg-amber-500/10', border: 'border-amber-500/20', text: 'text-amber-400', dot: 'bg-amber-400' },
+  low:   { bg: 'bg-green-500/10', border: 'border-green-500/20', text: 'text-green-400', dot: 'bg-green-400' },
+}
+
 function ActionConfirmBar({
-  actions, results, onConfirm, onReject,
+  actions, results, fileIdMap, onConfirm, onReject, onConfirmOne, onRejectOne,
 }: {
   actions: FileAction[]
   results: string[]
+  fileIdMap: Record<string, { name: string; path: string }>
   onConfirm: () => void
   onReject: () => void
+  onConfirmOne: (index: number) => void
+  onRejectOne: (index: number) => void
 }) {
   if (actions.length === 0 && results.length === 0) return null
 
@@ -693,30 +727,37 @@ function ActionConfirmBar({
   return (
     <div className="px-4 pb-2">
       <div className="glass rounded-xl p-3 border border-accent-cyan/20 animate-slide-up">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-2 text-sm">
             <Bot size={14} className="text-accent-cyan" />
-            <span className="text-silver-200">AI 建议执行以下操作：</span>
+            <span className="text-silver-200">AI 建议执行 {actions.length} 个操作：</span>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={onReject}
-              className="px-2.5 py-1 rounded-lg text-xs text-silver-400 hover:text-white hover:bg-white/10 transition-all"
-            >
-              拒绝
-            </button>
-            <button
-              onClick={onConfirm}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-accent-cyan/20 text-accent-cyan hover:bg-accent-cyan/30 transition-all"
-            >
-              确认执行
-            </button>
+            <button onClick={onReject} className="px-2.5 py-1 rounded-lg text-xs text-silver-400 hover:text-white hover:bg-white/10 transition-all">全拒</button>
+            <button onClick={onConfirm} className="px-2.5 py-1 rounded-lg text-xs font-medium bg-accent-cyan/20 text-accent-cyan hover:bg-accent-cyan/30 transition-all">全确认</button>
           </div>
         </div>
-        <div className="mt-2 space-y-0.5">
-          {actions.map((a, i) => (
-            <p key={i} className="text-xs text-silver-400">· {describeAction(a)}</p>
-          ))}
+        <div className="space-y-1.5">
+          {actions.map((a, i) => {
+            const risk = actionRisk(a)
+            const rs = RISK_STYLE[risk]
+            return (
+              <div key={i} className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg ${rs.bg} border ${rs.border}`}>
+                <div className="flex items-center gap-2">
+                  <div className={`w-1.5 h-1.5 rounded-full ${rs.dot}`} />
+                  <span className="text-xs text-silver-300">{describeAction(a, fileIdMap)}</span>
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => onConfirmOne(i)} className="p-1 rounded hover:bg-green-500/20 text-green-400" title="确认">
+                    <Check size={13} />
+                  </button>
+                  <button onClick={() => onRejectOne(i)} className="p-1 rounded hover:bg-red-500/20 text-red-400" title="拒绝">
+                    <X size={13} />
+                  </button>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
@@ -728,10 +769,10 @@ function ActionConfirmBar({
 export default function SmartAssistant() {
   const {
     sessions, currentSessionId, messages, streaming, loading, error,
-    pendingActions, actionResults,
+    pendingActions, actionResults, searchSuggestions, fileIdMap,
     loadSessions, createSession, switchSession, deleteSession, renameSession,
     sendMessage, stopGeneration, clearError,
-    confirmActions, rejectActions,
+    confirmActions, confirmOneAction, rejectActions, rejectOneAction, executeSearchSuggestion,
   } = useChatStore()
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -832,9 +873,31 @@ export default function SmartAssistant() {
               <ActionConfirmBar
                 actions={pendingActions}
                 results={actionResults}
+                fileIdMap={fileIdMap}
                 onConfirm={confirmActions}
                 onReject={rejectActions}
+                onConfirmOne={confirmOneAction}
+                onRejectOne={rejectOneAction}
               />
+            )}
+            {searchSuggestions.length > 0 && (
+              <div className="px-4 pb-2">
+                <div className="glass rounded-xl p-3 border border-accent-cyan/20 animate-slide-up">
+                  <p className="text-xs text-silver-400 mb-2">AI 建议搜索：</p>
+                  <div className="flex flex-wrap gap-2">
+                    {searchSuggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        onClick={() => executeSearchSuggestion(s.query)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 bg-accent-cyan/10 text-accent-cyan rounded-lg text-xs hover:bg-accent-cyan/20 transition-all border border-accent-cyan/20"
+                      >
+                        <Search size={12} />
+                        {s.query}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
             )}
 
             {/* Input area */}

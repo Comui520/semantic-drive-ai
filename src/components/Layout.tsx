@@ -1,4 +1,4 @@
-import { Search, FolderTree, Sparkles, Shield, Sun, Moon, Menu, X, MessageSquare } from 'lucide-react'
+import { Search, FolderTree, Sparkles, Shield, Sun, Moon, Menu, X, MessageSquare, Settings } from 'lucide-react'
 import { useAppStore, type NavPage } from '../store/appStore'
 import { useThemeStore } from '../store/themeStore'
 import { useSettingsStore } from '../store/settingsStore'
@@ -9,6 +9,7 @@ const navItems: { id: NavPage; label: string; icon: React.ReactNode }[] = [
   { id: 'classify', label: '文件分类', icon: <FolderTree size={20} /> },
   { id: 'organize', label: '整理建议', icon: <Sparkles size={20} /> },
   { id: 'vault', label: '安全空间', icon: <Shield size={20} /> },
+  { id: 'settings', label: '设置', icon: <Settings size={20} /> },
 ]
 
 export default function Layout({ children }: { children: React.ReactNode }) {

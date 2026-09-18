@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Virtuoso } from 'react-virtuoso'
 import { Folder, ChevronRight, Home, RotateCw, Pencil, Trash2, FolderOpen, ExternalLink, Copy, Scissors, ClipboardPaste, Plus, X, Check } from 'lucide-react'
 
 export interface DirEntry {
@@ -122,174 +123,173 @@ export default function FileBrowser({
         </button>
       </div>
 
-      {/* Entry list */}
-      <div className="space-y-1">
-        {/* Parent directory link */}
-        {currentPath && (
-          <div
-            onClick={onNavigateUp}
-            className="glass rounded-xl p-3 hover:bg-white/5 transition-colors cursor-pointer"
-          >
-            <div className="flex items-center gap-3">
-              <Folder size={20} className="text-silver-400 shrink-0" />
-              <span className="text-sm text-silver-400">..</span>
-            </div>
+      {/* Parent directory link */}
+      {currentPath && (
+        <div
+          onClick={onNavigateUp}
+          className="glass rounded-xl p-3 mb-1 hover:bg-white/5 transition-colors cursor-pointer"
+        >
+          <div className="flex items-center gap-3">
+            <Folder size={20} className="text-silver-400 shrink-0" />
+            <span className="text-sm text-silver-400">..</span>
           </div>
-        )}
+        </div>
+      )}
 
-        {entries.map((entry, idx) => (
-          <div
-            key={entry.path}
-            className="group glass rounded-xl p-3 hover:bg-white/5 transition-colors animate-slide-up"
-            style={{ animationDelay: `${idx * 40}ms` }}
-          >
-            {entry.is_dir ? (
-              <div
-                onClick={() => onNavigate(entry.path)}
-                className="flex items-center gap-3 cursor-pointer"
-              >
-                <Folder size={20} className="text-accent-cyan shrink-0" />
-                <span className="text-sm font-medium">{entry.name}</span>
-                <span className="text-xs text-silver-500 ml-auto">
-                  {entry.modified.slice(0, 10)}
-                </span>
-              </div>
-            ) : (
-              <div className="flex items-center justify-between">
+      {/* Virtual-scrolled entry list */}
+      {entries.length > 0 ? (
+        <Virtuoso
+          style={{ height: 'calc(100vh - 280px)' }}
+          data={entries}
+          computeItemKey={(_, entry) => entry.path}
+          itemContent={(_index, entry) => (
+            <div className="group glass rounded-xl p-3 mb-1 hover:bg-white/5 transition-colors">
+              {entry.is_dir ? (
                 <div
-                  className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
-                  onClick={() => onOpenFile(entry.path)}
+                  onClick={() => onNavigate(entry.path)}
+                  className="flex items-center gap-3 cursor-pointer"
                 >
-                  <span className="text-lg shrink-0">{getFileIcon(entry.name)}</span>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-sm font-medium truncate">{entry.name}</h3>
-                    <p className="text-xs text-silver-500 truncate">{entry.path}</p>
-                  </div>
+                  <Folder size={20} className="text-accent-cyan shrink-0" />
+                  <span className="text-sm font-medium">{entry.name}</span>
+                  <span className="text-xs text-silver-500 ml-auto">
+                    {entry.modified.slice(0, 10)}
+                  </span>
                 </div>
-                <div className="flex items-center gap-2 shrink-0 ml-4">
-                  <span className="text-xs text-silver-500">{formatSize(entry.size)}</span>
-                  <span className="text-xs text-silver-600">{entry.modified.slice(0, 10)}</span>
-                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button
-                      onClick={() => onOpenLocation(entry.path)}
-                      className="p-1.5 rounded-lg text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
-                      title="打开文件所在位置"
-                    >
-                      <FolderOpen size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onOpenFile(entry.path); }}
-                      className="p-1.5 rounded-lg text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
-                      title="打开文件"
-                    >
-                      <ExternalLink size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onCopy(entry.path); }}
-                      className="p-1.5 rounded-lg text-silver-400 hover:text-accent-teal hover:bg-white/10 transition-all"
-                      title="复制"
-                    >
-                      <Copy size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onCut(entry.path); }}
-                      className="p-1.5 rounded-lg text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
-                      title="剪切"
-                    >
-                      <Scissors size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onRename(entry.path, entry.name); }}
-                      className="p-1.5 rounded-lg text-silver-400 hover:text-accent-teal hover:bg-white/10 transition-all"
-                      title="重命名"
-                    >
-                      <Pencil size={14} />
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onDelete(entry.path); }}
-                      className="p-1.5 rounded-lg text-silver-400 hover:text-red-400 hover:bg-white/10 transition-all"
-                      title="删除"
-                    >
-                      <Trash2 size={14} />
-                    </button>
+              ) : (
+                <div className="flex items-center justify-between">
+                  <div
+                    className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer"
+                    onClick={() => onOpenFile(entry.path)}
+                  >
+                    <span className="text-lg shrink-0">{getFileIcon(entry.name)}</span>
+                    <div className="min-w-0 flex-1">
+                      <h3 className="text-sm font-medium truncate">{entry.name}</h3>
+                      <p className="text-xs text-silver-500 truncate">{entry.path}</p>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
-
-            {/* Custom tags for browse mode */}
-            {!entry.is_dir && browseFileTags && onBrowseAddTag && onBrowseRemoveTag && (
-              <div className="mt-2 pt-2 border-t border-white/5">
-                <div className="flex items-center gap-1.5 flex-wrap min-h-[28px]">
-                  {(browseFileTags[entry.path] || []).map(tag => (
-                    <span
-                      key={tag}
-                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-accent-teal/10 text-[11px] text-accent-teal border border-accent-teal/20"
-                    >
-                      {tag}
+                  <div className="flex items-center gap-2 shrink-0 ml-4">
+                    <span className="text-xs text-silver-500">{formatSize(entry.size)}</span>
+                    <span className="text-xs text-silver-600">{entry.modified.slice(0, 10)}</span>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
-                        onClick={(e) => { e.stopPropagation(); onBrowseRemoveTag(entry.path, tag); }}
-                        className="hover:text-red-400 transition-colors"
+                        onClick={() => onOpenLocation(entry.path)}
+                        className="p-1.5 rounded-lg text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
+                        title="打开文件所在位置"
                       >
-                        <X size={10} />
+                        <FolderOpen size={14} />
                       </button>
-                    </span>
-                  ))}
-                  {editingTagPath === entry.path ? (
-                    <div className="relative inline-flex items-center gap-1">
-                      <input
-                        type="text"
-                        value={tagInput}
-                        onChange={e => setTagInput(e.target.value)}
-                        onKeyDown={e => {
-                          if (e.key === 'Enter' && tagInput.trim()) {
-                            onBrowseAddTag(entry.path, tagInput.trim());
-                            setEditingTagPath(null);
-                            setTagInput('');
-                          }
-                          if (e.key === 'Escape') {
-                            setEditingTagPath(null);
-                            setTagInput('');
-                          }
-                        }}
-                        placeholder="标签名..."
-                        className="w-24 glass-light rounded px-2 py-0.5 text-[11px] text-white placeholder:text-silver-500 focus:outline-none focus:ring-1 focus:ring-accent-cyan/30 border border-white/5"
-                        autoFocus
-                      />
                       <button
-                        onClick={() => {
-                          if (tagInput.trim()) {
-                            onBrowseAddTag(entry.path, tagInput.trim());
-                            setEditingTagPath(null);
-                            setTagInput('');
-                          }
-                        }}
-                        className="p-0.5 rounded text-accent-cyan hover:bg-accent-cyan/10 transition-colors"
+                        onClick={(e) => { e.stopPropagation(); onOpenFile(entry.path); }}
+                        className="p-1.5 rounded-lg text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
+                        title="打开文件"
                       >
-                        <Check size={12} />
+                        <ExternalLink size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onCopy(entry.path); }}
+                        className="p-1.5 rounded-lg text-silver-400 hover:text-accent-teal hover:bg-white/10 transition-all"
+                        title="复制"
+                      >
+                        <Copy size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onCut(entry.path); }}
+                        className="p-1.5 rounded-lg text-silver-400 hover:text-accent-cyan hover:bg-white/10 transition-all"
+                        title="剪切"
+                      >
+                        <Scissors size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onRename(entry.path, entry.name); }}
+                        className="p-1.5 rounded-lg text-silver-400 hover:text-accent-teal hover:bg-white/10 transition-all"
+                        title="重命名"
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDelete(entry.path); }}
+                        className="p-1.5 rounded-lg text-silver-400 hover:text-red-400 hover:bg-white/10 transition-all"
+                        title="删除"
+                      >
+                        <Trash2 size={14} />
                       </button>
                     </div>
-                  ) : (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setEditingTagPath(entry.path); setTagInput(''); }}
-                      className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md text-[11px] text-silver-500 hover:text-accent-cyan hover:bg-white/5 border border-dashed border-white/10 transition-all"
-                    >
-                      <Plus size={10} /> 标签
-                    </button>
-                  )}
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        ))}
+              )}
 
-        {entries.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-48 text-silver-500">
-            <Folder size={40} className="mb-3 opacity-30" />
-            <p className="text-sm">此文件夹为空</p>
-          </div>
-        )}
-      </div>
+              {/* Custom tags for browse mode */}
+              {!entry.is_dir && browseFileTags && onBrowseAddTag && onBrowseRemoveTag && (
+                <div className="mt-2 pt-2 border-t border-white/5">
+                  <div className="flex items-center gap-1.5 flex-wrap min-h-[28px]">
+                    {(browseFileTags[entry.path] || []).map(tag => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-accent-teal/10 text-[11px] text-accent-teal border border-accent-teal/20"
+                      >
+                        {tag}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onBrowseRemoveTag(entry.path, tag); }}
+                          className="hover:text-red-400 transition-colors"
+                        >
+                          <X size={10} />
+                        </button>
+                      </span>
+                    ))}
+                    {editingTagPath === entry.path ? (
+                      <div className="relative inline-flex items-center gap-1">
+                        <input
+                          type="text"
+                          value={tagInput}
+                          onChange={e => setTagInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter' && tagInput.trim()) {
+                              onBrowseAddTag(entry.path, tagInput.trim());
+                              setEditingTagPath(null);
+                              setTagInput('');
+                            }
+                            if (e.key === 'Escape') {
+                              setEditingTagPath(null);
+                              setTagInput('');
+                            }
+                          }}
+                          placeholder="标签名..."
+                          className="w-24 glass-light rounded px-2 py-0.5 text-[11px] text-white placeholder:text-silver-500 focus:outline-none focus:ring-1 focus:ring-accent-cyan/30 border border-white/5"
+                          autoFocus
+                        />
+                        <button
+                          onClick={() => {
+                            if (tagInput.trim()) {
+                              onBrowseAddTag(entry.path, tagInput.trim());
+                              setEditingTagPath(null);
+                              setTagInput('');
+                            }
+                          }}
+                          className="p-0.5 rounded text-accent-cyan hover:bg-accent-cyan/10 transition-colors"
+                        >
+                          <Check size={12} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setEditingTagPath(entry.path); setTagInput(''); }}
+                        className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded-md text-[11px] text-silver-500 hover:text-accent-cyan hover:bg-white/5 border border-dashed border-white/10 transition-all"
+                      >
+                        <Plus size={10} /> 标签
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        />
+      ) : (
+        <div className="flex flex-col items-center justify-center h-48 text-silver-500">
+          <Folder size={40} className="mb-3 opacity-30" />
+          <p className="text-sm">此文件夹为空</p>
+        </div>
+      )}
     </div>
   )
 }

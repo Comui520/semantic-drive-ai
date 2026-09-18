@@ -1,129 +1,124 @@
-# Semantic Drive AI — 语义智能文件管家
+# Semantic Drive AI
 
-跨平台便携式桌面应用，无需安装，可直接从 U 盘或移动固态硬盘运行。使用自然语言管理和查找存储设备中的文件，完全离线运行，不依赖任何云服务。
+Semantic Drive AI 是一个 **API-first、跨平台的 AI 文件管理助手**。它运行在 Windows、macOS 和 Linux 的 Tauri 桌面环境中，用自然语言帮助用户搜索、理解和整理文件。
 
-## 功能概览
+> 这是原参赛作品的持续演进版本。旧版本强调“U 盘便携 + 完全离线模型”；当前版本改为优先使用云端 API，并通过可选工作区适配普通电脑、外接硬盘和网络同步目录。
 
-- **自然语言语义搜索** — 用中文自然语言描述查找文件（如"上周修改的财务报表"）
-- **自动文件分类** — 按内容将文件归入虚拟文件夹，自动生成标签
-- **重复文件检测** — 基于哈希和内容相似度识别重复和相似文件
-- **加密安全空间** — AES-256 加密沙盒，保护敏感文件
-- **完全离线 AI** — 所有模型本地运行，断网可用
+## 当前定位
+
+- **跨平台文件管理助手**：文件扫描、目录浏览、全文检索、分类、去重、标签和加密空间
+- **API 优先**：聊天和语义能力通过 OpenAI 兼容接口接入，可使用 DeepSeek、SiliconFlow、OpenAI-compatible gateway 或自建服务
+- **Agent 化交互**：助手可以搜索文件并生成移动、复制、重命名、删除、打标签、加密等操作计划；所有变更操作都必须经过用户确认
+- **安全边界**：Agent 只处理选定工作区内的 `file_id`，不信任模型生成的文件路径，不允许通过 `..` 或绝对路径越界
+- **可渐进增强**：没有嵌入 API 时仍可使用 SQLite FTS 和轻量 n-gram 回退搜索；不再下载或加载数百 MB 的本地大模型
+
+## 已完成的本轮重构
+
+1. 移除 Candle、Tokenizer、Hugging Face 模型下载和本地 Qwen/BGE 加载链路，减少编译复杂度和运行时占用。
+2. 聊天改为 API-only；API 未配置时给出明确设置提示，不再“静默回退到不存在的本地模型”。
+3. 默认配置切换为 API-first，配置迁移兼容旧版 `config.json`。
+4. 设置页支持填写聊天 API、嵌入 API，并可跨平台选择工作区目录。
+5. 修复项目目录膨胀问题：`src-tauri/target` 是编译缓存，当前约 15.9 GB，不属于源码交付物，已由 ESLint 忽略且 `.gitignore` 已覆盖。
+6. 强化 Agent 文件操作：优先使用 `file_id`；校验工作区边界、绝对路径、Windows 驱动器前缀、文件名和索引路径。
+7. 修复 Action JSON 解析：字符串中的 `{}` 不会再破坏动作标记的解析。
+8. 保留增量扫描、SQLite 元数据、FTS5、目录浏览、分类、去重、标签和安全空间等原有能力。
 
 ## 技术栈
 
 | 层 | 技术 |
-|---|------|
-| UI | Tauri v2 + React 19 + TypeScript |
-| 后端 | Rust (scanner, AI pipeline, search, vault) |
-| Embedding | BGE-small-zh (n-gram 哈希 MVP, ONNX 待集成) |
-| 向量搜索 | 余弦相似度 + 关键词混合搜索 |
-| LLM | Qwen2 0.5B GGUF (candle 待集成) |
-| OCR | PaddleOCR (待集成) |
-| 数据库 | SQLite (rusqlite, bundled) |
-| 加密 | AES-256-GCM + Argon2id |
+|---|---|
+| 桌面壳 | Tauri 2 |
+| 前端 | React 19 + TypeScript + Vite + Zustand |
+| 后端 | Rust |
+| 数据库 | SQLite / rusqlite + FTS5 |
+| 内容提取 | TXT、Markdown、代码、PDF、DOCX、XLSX |
+| 云端 AI | OpenAI-compatible Chat Completions / Embeddings |
+| 本地回退 | 关键词、FTS5、轻量确定性 n-gram 向量 |
+| 加密 | AES-256-GCM + Argon2 |
 
-## 运行环境
+## 开发环境
 
-- **Windows 10+** 或 **macOS 12+**
-- **Node.js** >= 22.x
-- **Rust** >= 1.77 (GNU toolchain: `stable-x86_64-pc-windows-gnu`)
-- **MinGW-w64** (Windows) — 通过 WinLibs 或 MSYS2 安装
-- **Python 3.10+** (可选, 用于测试脚本)
-
-## 快速开始
-
-### 1. 安装依赖
+- Node.js 22+
+- Rust stable
+- Windows 10/11、macOS 12+ 或主流 Linux 桌面环境
+- Windows 构建需要 WebView2；Tauri 会使用系统 WebView2
 
 ```bash
-# 安装 Rust (GNU toolchain)
-rustup default stable-x86_64-pc-windows-gnu
-
-# Windows: 确保 MinGW-w64 在 PATH 中
-# 推荐: winget install BrechtSanders.WinLibs.POSIX.UCRT
-
-# 安装 Node.js 依赖
 npm install
+npm run dev          # 仅启动前端
+npm run tauri:dev    # 启动桌面应用
+npm run build        # 前端类型检查 + 生产构建
+npm run lint         # ESLint
+cd src-tauri
+cargo check          # Rust 编译检查
+cargo test           # Rust 单元测试（Windows GNU 环境可能需要匹配的运行时 DLL）
 ```
 
-### 2. 开发模式启动
+## 首次使用
 
-```bash
-npm run tauri:dev
+1. 运行应用，进入“设置”。
+2. 选择一个工作区目录。工作区可以是用户目录、项目目录、外接硬盘目录或同步盘目录。
+3. 填写聊天 API：
+   - Base URL 形如 `https://api.example.com/v1`
+   - 模型填写服务商提供的模型名
+   - 填写 API Key
+4. 如需语义搜索，再填写嵌入 API。未填写时仍能使用关键词和全文搜索。
+5. 回到“智能搜索”并扫描。首次扫描提取文件元数据和文本，后续扫描只处理新增或修改文件。
+6. 在“智能助手”中提出请求。涉及文件变更时，先检查待执行操作，再逐项或批量确认。
+
+## Agent 设计
+
+当前 Agent 采用“**模型负责理解与提出计划，应用负责工具执行和安全校验**”的边界：
+
+```text
+用户请求
+  -> 意图识别 / RAG 文件上下文
+  -> API 生成计划与 [ACTION:{...}] 工具调用
+  -> 前端展示待确认动作
+  -> 用户确认
+  -> Rust 工具层校验 file_id、工作区边界和参数
+  -> 执行文件操作、更新 SQLite、返回审计结果
 ```
 
-### 3. 生产构建
+当前工具包括：
 
-```bash
-npm run tauri:build
+- 搜索和打开文件
+- 移动、复制、导入、重命名、删除
+- 设置、添加、移除标签
+- 添加到安全空间
+- 跳转到分类和去重页面
+
+下一阶段可以将文本动作标记升级为正式的 OpenAI tool calling / JSON Schema，并增加操作历史、撤销、批量计划预览、失败重试和后台任务队列。
+
+## 数据与配置位置
+
+- 用户配置：操作系统应用数据目录下的 `SemanticDrive/config.json`
+- 工作区索引：工作区下的 `.semanticdrive/metadata.db`
+- 安全空间：工作区下的 `.semanticdrive/vault/`
+- Rust 编译缓存：`src-tauri/target/`，不应提交到 Git 或打包分发
+
+## 代码结构
+
+```text
+src/
+  components/       UI 组件、文件浏览器、欢迎引导
+  pages/            搜索、助手、分类、整理、安全空间、设置
+  store/            Zustand 状态
+  types/            前后端配置类型
+src-tauri/src/
+  scanner/          扫描器、工作区边界和文件监听
+  store/            SQLite 元数据、标签、聊天记录、配置
+  ai/               API 客户端、回退嵌入、查询解析、混合搜索、文本提取
+  chat.rs           Agent 提示词、动作协议、RAG 上下文
+  lib.rs            Tauri 命令、安全文件工具和应用装配
+  vault.rs          加密安全空间
 ```
 
-构建产物位于 `src-tauri/target/release/bundle/`。
+## 设计原则
 
-## 项目结构
-
-```
-semantic-drive-ai/
-├── src/                      # React 前端
-│   ├── components/Layout.tsx # 侧边栏 + 布局
-│   ├── pages/                # 4 个页面组件
-│   │   ├── SmartSearch.tsx   # 智能搜索
-│   │   ├── FileClassify.tsx  # 文件分类
-│   │   ├── OrganizeSuggestions.tsx # 整理建议
-│   │   └── SecureSpace.tsx   # 安全空间
-│   └── store/                # Zustand 状态管理
-├── src-tauri/                # Rust 后端
-│   ├── src/
-│   │   ├── lib.rs            # Tauri 命令注册
-│   │   ├── main.rs           # 入口
-│   │   ├── scanner/mod.rs    # 文件扫描器
-│   │   ├── store/mod.rs      # SQLite 元数据存储
-│   │   ├── ai/               # AI 管道
-│   │   │   ├── mod.rs        # 内容提取调度
-│   │   │   ├── extractor.rs  # PDF/DOCX/XLSX/TXT 提取
-│   │   │   ├── embedding.rs  # 文本向量化引擎
-│   │   │   └── search.rs     # 混合搜索引擎
-│   │   ├── classifier.rs     # 文件分类器
-│   │   ├── dedup.rs          # 重复文件检测
-│   │   └── vault.rs          # 加密保险箱
-│   └── Cargo.toml
-├── package.json
-└── vite.config.ts
-```
-
-## 运行测试
-
-```bash
-# 前端类型检查
-npm run build
-
-# Rust 后端检查
-cd src-tauri && cargo check
-
-# Rust 测试 (待添加)
-cargo test
-
-# 前端测试 (待添加)
-npm test
-```
-
-## AI 模型说明
-
-当前 MVP 版本使用轻量级 n-gram 哈希进行文本向量化，无需下载额外模型。
-
-后续版本将集成以下模型（自动下载至 `.semanticdrive/models/`）：
-
-| 模型 | 用途 | 大小 | 格式 |
-|------|------|------|------|
-| BGE-small-zh | 文本向量化 | ~24MB | ONNX |
-| Qwen2-0.5B-Instruct | 查询理解 | ~400MB | GGUF Q4_K_M |
-| PaddleOCR-zh | 图片文字识别 | ~30MB | ONNX |
-
-所有模型均为完全离线运行，无需网络连接。
-
-## 注意事项
-
-- 应用仅在所在存储设备范围内扫描文件，不会访问电脑本地磁盘
-- 不会修改或破坏原有文件，仅在设备根目录创建 `.semanticdrive` 缓存文件夹
-- 首次扫描可能需要数分钟，后续启动仅扫描增量变化
-- 加密空间使用 AES-256-GCM 加密，密码不可找回
+- 不把 API Key 写入源码、Git 或日志
+- 不让 LLM 直接执行文件操作；必须经过用户确认和 Rust 校验
+- 不依赖本地大模型作为启动前置条件
+- 不把应用安装目录自动当成用户工作区；优先使用用户选择的目录
+- 大量文件操作放到后台线程，UI 只接收进度事件
+- 索引更新采用增量策略，避免每次启动完整扫描

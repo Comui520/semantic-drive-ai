@@ -1,8 +1,9 @@
+import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
 
-export default function MarkdownRenderer({ content }: { content: string }) {
+const MarkdownRenderer: React.FC<{ content: string }> = ({ content }) => {
   return (
     <div className="markdown-body text-sm leading-relaxed">
       <ReactMarkdown
@@ -114,3 +115,5 @@ const components: Components = {
     return <hr className="my-3 border-white/10" />
   },
 }
+
+export default React.memo(MarkdownRenderer)

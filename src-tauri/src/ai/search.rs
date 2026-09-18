@@ -72,6 +72,9 @@ impl SearchEngine {
     /// Returns results sorted by relevance score (highest first).
     /// Hybrid approach: combines vector similarity + filename/path keyword match + content keyword match.
     ///
+    /// `content_scores` — optional pre-computed FTS5 content relevance scores (file_id → score).
+    /// When provided, replaces the O(N) content_keyword_score() with FTS5 rank lookup.
+    ///
     /// When `use_en` is true and the English embedding model is loaded, the query is
     /// embedded through both zh and en models independently. The max of the two vector
     /// similarities is used, enabling cross-language retrieval.
@@ -81,20 +84,54 @@ impl SearchEngine {
         files: &[FileEntry],
         max_results: usize,
         use_en: bool,
+        content_scores: Option<&HashMap<String, f32>>,
+    ) -> Vec<SearchResult> {
+        self.search_with_embedding(query, None, files, max_results, use_en, content_scores)
+    }
+
+    /// Search using a pre-computed query embedding (e.g. from remote API).
+    /// Falls back to local embedding when `query_embedding` is None.
+    pub fn search_with_embedding(
+        &self,
+        query: &str,
+        query_embedding: Option<&Vec<f32>>,
+        files: &[FileEntry],
+        max_results: usize,
+        use_en: bool,
+        content_scores: Option<&HashMap<String, f32>>,
     ) -> Vec<SearchResult> {
         if query.trim().is_empty() {
             return Vec::new();
         }
 
-        let query_embedding_zh = self.zh_engine.embed(query);
+        let query_embedding_zh = match query_embedding {
+            Some(emb) => emb.clone(),
+            None => self.zh_engine.embed(query),
+        };
         let query_embedding_en = if use_en {
             self.en_engine.as_ref().map(|e| e.embed(query))
         } else {
             None
         };
 
-        let mut results: Vec<SearchResult> = files
-            .iter()
+        // Staged scoring: when many files, pre-filter with fast keyword+content scores
+        let candidates: Vec<&FileEntry> = if files.len() > 500 && content_scores.is_some() {
+            let mut quick: Vec<(&FileEntry, f32)> = files.iter()
+                .map(|f| {
+                    let s = keyword_score(query, &f.name, &f.path)
+                        + content_scores.and_then(|cs| cs.get(&f.id)).copied().unwrap_or(0.0);
+                    (f, s)
+                })
+                .collect();
+            quick.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            quick.truncate((max_results * 3).max(200));
+            quick.into_iter().map(|(f, _)| f).collect()
+        } else {
+            files.iter().collect()
+        };
+
+        let mut results: Vec<SearchResult> = candidates
+            .into_iter()
             .filter_map(|file| {
                 // 1a. Vector similarity via zh model (always available)
                 let vector_score_zh = self.embeddings_zh
@@ -114,8 +151,10 @@ impl SearchEngine {
                 // 2. Keyword match on filename and path
                 let kw_score = keyword_score(query, &file.name, &file.path);
 
-                // 3. Content keyword match (extracted text)
-                let content_score = content_keyword_score(query, &self.contents, &file.id);
+                // 3. Content keyword match (extracted text) — uses FTS5 scores if provided
+                let content_score = content_scores
+                    .and_then(|scores| scores.get(&file.id).copied())
+                    .unwrap_or_else(|| content_keyword_score(query, &self.contents, &file.id));
 
                 // Combined score: adaptive weighted combination.
                 // When vector is reliable (BGE model loaded), weight it heavily.
@@ -189,40 +228,13 @@ impl SearchEngine {
         self.en_engine.as_mut()
     }
 
-    /// Load zh embedding model from directory (config.json, tokenizer.json, model weights)
-    pub fn load_embedding_model(&mut self, path: &std::path::Path) -> Result<(), String> {
-        self.zh_engine.load(path)?;
-        let old_embeddings: Vec<(String, String)> = self.contents.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        self.embeddings_zh.clear();
-        for (id, text) in &old_embeddings {
-            let emb = self.zh_engine.embed(text);
-            self.embeddings_zh.insert(id.clone(), emb);
-        }
-        log::info!("Re-indexed {} files with new zh embedding model", old_embeddings.len());
-        Ok(())
-    }
-
-    /// Load en embedding model (BGE-base-en) and re-index existing content.
-    pub fn load_en_model(&mut self, path: &std::path::Path) -> Result<(), String> {
-        let prefix = "Represent this sentence for searching relevant passages: ";
-        let mut en = EmbeddingEngine::with_prefix(prefix);
-        en.load(path)?;
-        let old_contents: Vec<(String, String)> = self.contents.iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        self.embeddings_en.clear();
-        for (id, text) in &old_contents {
-            let emb = en.embed(text);
-            self.embeddings_en.insert(id.clone(), emb);
-        }
-        self.en_engine = Some(en);
-        log::info!(
-            "BGE-base-en loaded and re-indexed {} files",
-            old_contents.len()
-        );
-        Ok(())
+    /// Compute a single embedding using the remote API.
+    pub fn embed_query_remote(
+        &self,
+        query: &str,
+        api_config: &crate::ai::api_client::ApiEndpointConfig,
+    ) -> Result<Vec<f32>, String> {
+        self.zh_engine.embed_remote(query, api_config)
     }
 
     /// Clear all indexed data
@@ -480,21 +492,21 @@ mod tests {
     #[test]
     fn test_search_empty_query() {
         let engine = SearchEngine::new();
-        let results = engine.search("", &[], 10, false);
+        let results = engine.search("", &[], 10, false, None);
         assert!(results.is_empty(), "empty query should return no results");
     }
 
     #[test]
     fn test_search_whitespace_query() {
         let engine = SearchEngine::new();
-        let results = engine.search("   ", &[], 10, false);
+        let results = engine.search("   ", &[], 10, false, None);
         assert!(results.is_empty(), "whitespace query should return no results");
     }
 
     #[test]
     fn test_search_no_files() {
         let engine = SearchEngine::new();
-        let results = engine.search("test", &[], 10, false);
+        let results = engine.search("test", &[], 10, false, None);
         assert!(results.is_empty(), "search with no files should return no results");
     }
 

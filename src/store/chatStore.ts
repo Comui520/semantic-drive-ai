@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
+import { useAppStore } from './appStore'
 
 
 export interface FileRef {
@@ -41,34 +42,54 @@ export type FileAction =
   | { cmd: 'move_file'; params: { source: string; destination: string } }
   | { cmd: 'copy_file'; params: { source: string; destination: string } }
   | { cmd: 'import_file'; params: { source: string; destination: string } }
-  | { cmd: 'vault_add_file'; params: { file_path: string; password: string } }
+  | { cmd: 'vault_add_file'; params: { file_path: string; password?: string } }
   | { cmd: 'set_file_tags'; params: { file_id: string; tags: string[] } }
   // ── ByFileId variants ──
   | { cmd: 'move_file_by_id'; params: { file_id: string; destination: string } }
   | { cmd: 'copy_file_by_id'; params: { file_id: string; destination: string } }
   | { cmd: 'delete_file_by_id'; params: { file_id: string } }
   | { cmd: 'rename_file_by_id'; params: { file_id: string; new_name: string } }
-  | { cmd: 'vault_add_file_by_id'; params: { file_id: string; password: string } }
+  | { cmd: 'vault_add_file_by_id'; params: { file_id: string; password?: string } }
+  | { cmd: 'search_files'; params: { query: string } }
+  | { cmd: 'import_file_by_id'; params: { file_id: string; destination: string } }
+  | { cmd: 'open_file_by_id'; params: { file_id: string } }
+  | { cmd: 'open_file_location_by_id'; params: { file_id: string } }
+  | { cmd: 'add_file_tags'; params: { file_id: string; tags: string[] } }
+  | { cmd: 'remove_file_tags'; params: { file_id: string; tags: string[] } }
+  | { cmd: 'classify_files'; params?: Record<string, never> }
+  | { cmd: 'find_duplicates'; params?: Record<string, never> }
 
 export interface ChatActionsEvent {
   session_id: string
   actions: FileAction[]
 }
 
-function describeAction(action: FileAction): string {
+function describeAction(action: FileAction, fileMap?: Record<string, { name: string; path: string }>): string {
+  const fileName = (id: string) => {
+    const f = fileMap?.[id]
+    return f ? `「${f.name}」` : `(ID: ${id})`
+  }
   switch (action.cmd) {
     case 'rename_file': return `重命名「${action.params.old_path}」→「${action.params.new_name}」`
     case 'delete_file': return `删除「${action.params.file_path}」`
     case 'move_file': return `移动「${action.params.source}」→「${action.params.destination}」`
     case 'copy_file': return `复制「${action.params.source}」→「${action.params.destination}」`
     case 'import_file': return `导入「${action.params.source}」→「${action.params.destination}」`
-    case 'vault_add_file': return `加密添加到安全空间: 「${action.params.file_path}」`
-    case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」到文件`
-    case 'move_file_by_id': return `移动文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
-    case 'copy_file_by_id': return `复制文件（ID: ${action.params.file_id}）→「${action.params.destination}」`
-    case 'delete_file_by_id': return `删除文件（ID: ${action.params.file_id}）`
-    case 'rename_file_by_id': return `重命名文件（ID: ${action.params.file_id}）→「${action.params.new_name}」`
-    case 'vault_add_file_by_id': return `加密添加到安全空间（ID: ${action.params.file_id}）`
+    case 'vault_add_file': return `加密「${action.params.file_path}」`
+    case 'set_file_tags': return `设置标签「${action.params.tags.join('、')}」→ ${fileName(action.params.file_id)}`
+    case 'move_file_by_id': return `移动 ${fileName(action.params.file_id)} →「${action.params.destination}」`
+    case 'copy_file_by_id': return `复制 ${fileName(action.params.file_id)} →「${action.params.destination}」`
+    case 'delete_file_by_id': return `删除 ${fileName(action.params.file_id)}`
+    case 'rename_file_by_id': return `重命名 ${fileName(action.params.file_id)} →「${action.params.new_name}」`
+    case 'vault_add_file_by_id': return `加密 ${fileName(action.params.file_id)}`
+    case 'search_files': return `搜索「${action.params.query}」`
+    case 'import_file_by_id': return `导入 ${fileName(action.params.file_id)} →「${action.params.destination}」`
+    case 'open_file_by_id': return `打开 ${fileName(action.params.file_id)}`
+    case 'open_file_location_by_id': return `打开位置 ${fileName(action.params.file_id)}`
+    case 'add_file_tags': return `添加标签「${action.params.tags.join('、')}」→ ${fileName(action.params.file_id)}`
+    case 'remove_file_tags': return `移除标签「${action.params.tags.join('、')}」从 ${fileName(action.params.file_id)}`
+    case 'classify_files': return `打开文件分类页面`
+    case 'find_duplicates': return `打开去重检测页面`
   }
 }
 
@@ -81,8 +102,11 @@ interface ChatState {
   error: string | null
   pendingActions: FileAction[]
   actionResults: string[]
+  searchSuggestions: { query: string }[]
+  fileIdMap: Record<string, { name: string; path: string }>
 
   loadSessions: () => Promise<void>
+  addFileIds: (refs: { file_id: string; file_name: string; file_path: string }[]) => void
   createSession: () => Promise<string>
   switchSession: (id: string) => Promise<void>
   deleteSession: (id: string) => Promise<void>
@@ -91,7 +115,10 @@ interface ChatState {
   stopGeneration: () => Promise<void>
   clearError: () => void
   confirmActions: () => Promise<void>
+  confirmOneAction: (index: number) => Promise<void>
   rejectActions: () => void
+  rejectOneAction: (index: number) => void
+  executeSearchSuggestion: (query: string) => void
 }
 
 let unlistenStream: (() => void) | null = null
@@ -106,6 +133,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   error: null,
   pendingActions: [],
   actionResults: [],
+  searchSuggestions: [],
+  fileIdMap: {},
 
   clearError: () => set({ error: null }),
 
@@ -113,6 +142,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await invoke('stop_chat')
       set({ streaming: false })
+      // Clean up listeners to prevent stale done events
+      if (unlistenStream) { unlistenStream(); unlistenStream = null }
+      if (unlistenActions) { unlistenActions(); unlistenActions = null }
     } catch (err) {
       set({ error: `停止失败: ${err}` })
     }
@@ -128,7 +160,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const result = await invoke<string>('execute_file_action', { actionJson: JSON.stringify(action) })
         results.push(result)
       } catch (err) {
-        results.push(`操作失败: ${describeAction(action)} — ${err}`)
+        results.push(`操作失败: ${describeAction(action, get().fileIdMap)} — ${err}`)
       }
     }
 
@@ -137,8 +169,51 @@ export const useChatStore = create<ChatState>((set, get) => ({
     setTimeout(() => set({ actionResults: [] }), 8000)
   },
 
+  confirmOneAction: async (index: number) => {
+    const { pendingActions } = get()
+    if (index < 0 || index >= pendingActions.length) return
+    const action = pendingActions[index]
+    try {
+      const result = await invoke<string>('execute_file_action', { actionJson: JSON.stringify(action) })
+      set((s) => ({
+        pendingActions: s.pendingActions.filter((_, i) => i !== index),
+        actionResults: [...s.actionResults, result],
+      }))
+    } catch (err) {
+      set((s) => ({
+        pendingActions: s.pendingActions.filter((_, i) => i !== index),
+        actionResults: [...s.actionResults, `操作失败: ${describeAction(action, s.fileIdMap)} — ${err}`],
+      }))
+    }
+  },
+
   rejectActions: () => {
-    set({ pendingActions: [] })
+    set({ pendingActions: [], searchSuggestions: [] })
+  },
+
+  rejectOneAction: (index: number) => {
+    set((s) => ({
+      pendingActions: s.pendingActions.filter((_, i) => i !== index),
+    }))
+  },
+
+  executeSearchSuggestion: (query: string) => {
+    useAppStore.getState().setSearchQuery(query)
+    useAppStore.getState().setPage('search')
+    set({ searchSuggestions: [] })
+  },
+
+  addFileIds: (refs) => {
+    if (!refs || refs.length === 0) return
+    set((s) => {
+      const map = { ...s.fileIdMap }
+      for (const ref of refs) {
+        if (ref.file_id && !map[ref.file_id]) {
+          map[ref.file_id] = { name: ref.file_name, path: ref.file_path }
+        }
+      }
+      return { fileIdMap: map }
+    })
   },
 
   loadSessions: async () => {
@@ -165,7 +240,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({ currentSessionId: id, loading: true, error: null })
     try {
       const messages = await invoke<ChatMessage[]>('get_chat_messages', { sessionId: id })
-      set({ messages, loading: false })
+      // Populate fileIdMap from message file_refs
+      const map: Record<string, { name: string; path: string }> = {}
+      for (const m of messages) {
+        if (m.file_refs) {
+          for (const ref of m.file_refs) {
+            if (ref.file_id && !map[ref.file_id]) {
+              map[ref.file_id] = { name: ref.file_name, path: ref.file_path }
+            }
+          }
+        }
+      }
+      set({ messages, loading: false, fileIdMap: map })
     } catch (err) {
       set({ error: `加载消息失败: ${err}`, loading: false })
     }
@@ -201,6 +287,9 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   sendMessage: async (content: string, attachedFiles?: { file_id: string; file_name: string; file_path: string }[], folderPaths?: string[]) => {
+    // Guard against concurrent sends
+    if (get().streaming) return
+
     const { currentSessionId } = get()
     let sessionId = currentSessionId
 
@@ -264,8 +353,31 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (event.payload.token && event.payload.token.startsWith('生成失败:')) {
             set({ streaming: false, error: event.payload.token })
           } else {
-            set({ streaming: false })
-            get().switchSession(get().currentSessionId || event.payload.session_id)
+            // Swap __streaming__ to a stable ID to finalize the message without reload flash
+            set((s) => ({
+              streaming: false,
+              messages: s.messages.map((m) =>
+                m.id === '__streaming__' ? { ...m, id: `__final_${Date.now()}` } : m
+              ),
+            }))
+            // Reload messages from DB to get the saved version with file_refs
+            if (sessionId) {
+              invoke<ChatMessage[]>('get_chat_messages', { sessionId })
+                .then((msgs) => {
+                  const map: Record<string, { name: string; path: string }> = {}
+                  for (const m of msgs) {
+                    if (m.file_refs) {
+                      for (const ref of m.file_refs) {
+                        if (ref.file_id && !map[ref.file_id]) {
+                          map[ref.file_id] = { name: ref.file_name, path: ref.file_path }
+                        }
+                      }
+                    }
+                  }
+                  set((s) => ({ messages: msgs, fileIdMap: { ...s.fileIdMap, ...map } }))
+                })
+                .catch(() => {}) // silent — streaming message stays visible
+            }
           }
           if (unlistenStream) { unlistenStream(); unlistenStream = null }
           if (unlistenActions) { unlistenActions(); unlistenActions = null }
@@ -289,7 +401,18 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Listen for AI-suggested file actions
       if (unlistenActions) { unlistenActions(); unlistenActions = null }
       unlistenActions = await listen<ChatActionsEvent>('chat-actions', (event) => {
-        set({ pendingActions: event.payload.actions, actionResults: [] })
+        // Separate navigation actions from file operations
+        const navActions = new Set(['search_files', 'classify_files', 'find_duplicates'])
+        const fileOps = event.payload.actions.filter(a => !navActions.has(a.cmd))
+        const searches = event.payload.actions
+          .filter(a => a.cmd === 'search_files')
+          .map(a => ({ query: (a as { cmd: 'search_files'; params: { query: string } }).params.query }))
+        // Handle classify/dedup as instant navigation
+        for (const a of event.payload.actions) {
+          if (a.cmd === 'classify_files') useAppStore.getState().setPage('classify')
+          if (a.cmd === 'find_duplicates') useAppStore.getState().setPage('organize')
+        }
+        set({ pendingActions: fileOps, actionResults: [], searchSuggestions: searches })
       })
     } catch (err) {
       set({ streaming: false, error: `消息发送失败: ${err}` })

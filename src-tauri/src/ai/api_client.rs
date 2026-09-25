@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader};
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 /// Configuration for an API endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -9,8 +10,11 @@ pub struct ApiEndpointConfig {
     pub api_key: String,
     pub model: String,
     pub enabled: bool,
+    #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 }
+
+fn default_timeout_secs() -> u64 { 30 }
 
 impl Default for ApiEndpointConfig {
     fn default() -> Self {
@@ -19,7 +23,7 @@ impl Default for ApiEndpointConfig {
             api_key: String::new(),
             model: String::new(),
             enabled: false,
-            timeout_secs: 30,
+            timeout_secs: default_timeout_secs(),
         }
     }
 }
@@ -53,11 +57,9 @@ pub fn call_embedding_api(
     if texts.is_empty() {
         return Ok(vec![]);
     }
-    if config.api_key.is_empty() {
-        return Err("API key is not configured".to_string());
-    }
+    validate_endpoint(config, "Embedding")?;
 
-    let url = format!("{}/embeddings", config.base_url.trim_end_matches('/'));
+    let url = format!("{}/embeddings", config.base_url.trim().trim_end_matches('/'));
     let body = serde_json::to_string(&EmbeddingRequest {
         model: &config.model,
         input: texts,
@@ -65,8 +67,8 @@ pub fn call_embedding_api(
     })
     .map_err(|e| format!("Failed to serialize embedding request: {}", e))?;
 
-    let response = ureq::post(&url)
-        .header("Authorization", &format!("Bearer {}", config.api_key))
+    let response = http_agent(config).post(&url)
+        .header("Authorization", &format!("Bearer {}", config.api_key.trim()))
         .header("Content-Type", "application/json")
         .send(body.as_str())
         .map_err(|e| format_ureq_error(&e, "Embedding API"))?;
@@ -272,10 +274,8 @@ pub fn call_chat_completion_api_with_tools(
     max_tokens: usize,
     tools: &[ChatApiTool],
 ) -> Result<ChatCompletionResult, String> {
-    if config.api_key.is_empty() {
-        return Err("API key is not configured".to_string());
-    }
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    validate_endpoint(config, "Chat")?;
+    let url = format!("{}/chat/completions", config.base_url.trim().trim_end_matches('/'));
     let body = serde_json::to_string(&ChatCompletionRequest {
         model: &config.model,
         messages,
@@ -285,8 +285,8 @@ pub fn call_chat_completion_api_with_tools(
         tools: if tools.is_empty() { None } else { Some(tools) },
         tool_choice: if tools.is_empty() { None } else { Some("auto") },
     }).map_err(|e| format!("Failed to serialize chat request: {}", e))?;
-    let response = ureq::post(&url)
-        .header("Authorization", &format!("Bearer {}", config.api_key))
+    let response = http_agent(config).post(&url)
+        .header("Authorization", &format!("Bearer {}", config.api_key.trim()))
         .header("Content-Type", "application/json")
         .send(body.as_str())
         .map_err(|e| format_ureq_error(&e, "Chat API"))?;
@@ -332,8 +332,8 @@ pub fn call_chat_completion_streaming_api_with_tools(
     on_token: &mut dyn FnMut(String),
 ) -> Result<ChatCompletionResult, String> {
     use std::sync::atomic::Ordering;
-    if config.api_key.is_empty() { return Err("API key is not configured".to_string()); }
-    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+    validate_endpoint(config, "Streaming Chat")?;
+    let url = format!("{}/chat/completions", config.base_url.trim().trim_end_matches('/'));
     let body = serde_json::to_string(&ChatCompletionRequest {
         model: &config.model,
         messages,
@@ -343,8 +343,8 @@ pub fn call_chat_completion_streaming_api_with_tools(
         tools: if tools.is_empty() { None } else { Some(tools) },
         tool_choice: if tools.is_empty() { None } else { Some("auto") },
     }).map_err(|e| format!("Failed to serialize streaming request: {}", e))?;
-    let response = ureq::post(&url)
-        .header("Authorization", &format!("Bearer {}", config.api_key))
+    let response = http_agent(config).post(&url)
+        .header("Authorization", &format!("Bearer {}", config.api_key.trim()))
         .header("Content-Type", "application/json")
         .header("Accept", "text/event-stream")
         .send(body.as_str())
@@ -399,6 +399,25 @@ pub fn test_embedding_connection(config: &ApiEndpointConfig) -> Result<(), Strin
 pub fn test_chat_connection(config: &ApiEndpointConfig) -> Result<(), String> {
     let test_messages = vec![ChatApiMessage::user("Hi")];
     call_chat_completion_api(config, &test_messages, 0.0, 10).map(|_| ())
+}
+
+fn validate_endpoint(config: &ApiEndpointConfig, context: &str) -> Result<(), String> {
+    if config.api_key.trim().is_empty() { return Err(format!("{} API key is not configured", context)); }
+    let base_url = config.base_url.trim();
+    if base_url.is_empty() { return Err(format!("{} API base URL is not configured", context)); }
+    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+        return Err(format!("{} API base URL must start with http:// or https://", context));
+    }
+    if config.model.trim().is_empty() { return Err(format!("{} API model is not configured", context)); }
+    Ok(())
+}
+
+fn http_agent(config: &ApiEndpointConfig) -> ureq::Agent {
+    let timeout = config.timeout_secs.clamp(5, 300);
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(timeout)))
+        .build()
+        .new_agent()
 }
 
 // ── Helpers ──
@@ -467,6 +486,27 @@ mod tests {
         let cfg = ApiEndpointConfig::default();
         let result = call_embedding_api(&cfg, &[]).unwrap();
         assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_deserialize_legacy_config_without_timeout() {
+        let json = r#"{"base_url":"https://example.com/v1","api_key":"key","model":"demo","enabled":true}"#;
+        let config: ApiEndpointConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.timeout_secs, 30);
+    }
+
+    #[test]
+    fn test_validate_endpoint_rejects_invalid_url() {
+        let config = ApiEndpointConfig {
+            base_url: "example.com/v1".to_string(),
+            api_key: "key".to_string(),
+            model: "demo".to_string(),
+            enabled: true,
+            timeout_secs: 30,
+        };
+        let error = call_chat_completion_api(&config, &[ChatApiMessage::user("hi")], 0.0, 10)
+            .unwrap_err();
+        assert!(error.contains("http://") || error.contains("https://"));
     }
 
     #[test]

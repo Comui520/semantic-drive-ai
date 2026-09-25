@@ -56,7 +56,7 @@ pub fn extract_text(file_path: &Path, extension: &str) -> Result<String, String>
         }
         "pdf" => extractor::extract_text_pdf(file_path),
         "docx" => extractor::extract_text_docx(file_path),
-        "xlsx" | "xls" => extractor::extract_text_xlsx(file_path),
+        "xlsx" | "xls" => extractor::extract_text_spreadsheet(file_path),
         _ => Err(format!("Unsupported format: {}", extension)),
     }
 }

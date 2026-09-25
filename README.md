@@ -1,129 +1,278 @@
 # Semantic Drive AI
 
-Semantic Drive AI 是一个 **API-first、跨平台的 AI 文件管理助手**。它运行在 Windows、macOS 和 Linux 的 Tauri 桌面环境中，用自然语言帮助用户搜索、理解和整理文件。
+**Semantic Drive AI** 是一个 API-first、跨平台的 AI 文件管理助手。它基于 Tauri 2、React、TypeScript 和 Rust 构建，使用自然语言帮助用户搜索、理解和整理本地工作区中的文件。
 
-> 这是原参赛作品的持续演进版本。旧版本强调“U 盘便携 + 完全离线模型”；当前版本改为优先使用云端 API，并通过可选工作区适配普通电脑、外接硬盘和网络同步目录。
+这是原参赛作品的持续演进版本。项目已经从“便携式 U 盘 + 本地大模型”调整为“普通桌面环境 + 云端 AI API + 受控 Agent 文件操作”。当前优先保证 Windows 体验，同时保留 macOS/Linux 的跨平台基础。
 
-## 当前定位
+## 项目定位
 
-- **跨平台文件管理助手**：文件扫描、目录浏览、全文检索、分类、去重、标签和加密空间
-- **API 优先**：聊天和语义能力通过 OpenAI 兼容接口接入，可使用 DeepSeek、SiliconFlow、OpenAI-compatible gateway 或自建服务
-- **Agent 化交互**：助手可以搜索文件并生成移动、复制、重命名、删除、打标签、加密等操作计划；所有变更操作都必须经过用户确认
-- **安全边界**：Agent 只处理选定工作区内的 `file_id`，不信任模型生成的文件路径，不允许通过 `..` 或绝对路径越界
-- **可渐进增强**：没有嵌入 API 时仍可使用 SQLite FTS 和轻量 n-gram 回退搜索；不再下载或加载数百 MB 的本地大模型
+> **一个带 Tool Calling、用户审批、安全边界、操作审计和增量索引的 AI 文件管理 Agent。**
 
-## 已完成的本轮重构
+它不是让模型直接执行任意文件命令，而是采用以下受控流程：
 
-1. 移除 Candle、Tokenizer、Hugging Face 模型下载和本地 Qwen/BGE 加载链路，减少编译复杂度和运行时占用。
-2. 聊天改为 API-only；API 未配置时给出明确设置提示，不再“静默回退到不存在的本地模型”。
-3. 默认配置切换为 API-first，配置迁移兼容旧版 `config.json`。
-4. 设置页支持填写聊天 API、嵌入 API，并可跨平台选择工作区目录。
-5. 修复项目目录膨胀问题：`src-tauri/target` 是编译缓存，当前约 15.9 GB，不属于源码交付物，已由 ESLint 忽略且 `.gitignore` 已覆盖。
-6. 强化 Agent 文件操作：优先使用 `file_id`；校验工作区边界、绝对路径、Windows 驱动器前缀、文件名和索引路径。
-7. 修复 Action JSON 解析：字符串中的 `{}` 不会再破坏动作标记的解析。
-8. 接入原生 OpenAI-compatible JSON Schema tool calling，并兼容旧版 `[ACTION:...]` 服务。
-9. 增加 Agent 操作历史、可撤销的重命名/移动/标签操作，以及后台任务中心。
-10. 增加云端 Embedding 批量重建任务；索引完成后按模型版本参与语义搜索，重启后也可恢复云端结果。
-11. 文件监听改为增量同步 SQLite、文本索引和搜索缓存，而不只是通知前端刷新。
-12. 前端提供批量操作计划预览、逐项确认、任务进度、失败重试和撤销入口。
+```text
+用户请求
+  -> 文件检索 / RAG 上下文
+  -> API 生成回答或结构化工具调用
+  -> 前端展示操作计划
+  -> 用户逐项或批量确认
+  -> Rust 工具层校验 file_id 和工作区边界
+  -> 执行文件操作
+  -> 更新索引、记录历史并返回结果
+```
 
-## 技术栈
+## 主要能力
 
-| 层 | 技术 |
-|---|---|
-| 桌面壳 | Tauri 2 |
-| 前端 | React 19 + TypeScript + Vite + Zustand |
-| 后端 | Rust |
-| 数据库 | SQLite / rusqlite + FTS5 |
-| 内容提取 | TXT、Markdown、代码、PDF、DOCX、XLSX |
-| 云端 AI | OpenAI-compatible Chat Completions / Embeddings |
-| 本地回退 | 关键词、FTS5、轻量确定性 n-gram 向量 |
-| 加密 | AES-256-GCM + Argon2 |
+### 文件管理
 
+- 选择工作区目录，扫描普通目录、项目目录、外接硬盘或同步目录
+- 目录浏览、文件打开、定位到文件所在目录
+- 移动、复制、导入、重命名、删除和创建文件夹
+- 文件标签：设置、添加、移除和按标签浏览
+- 重复文件检测
+- 安全空间：使用 AES-256-GCM 加密文件，并通过 Argon2 派生密钥
+
+### 搜索与索引
+
+- 文件名、路径、扩展名、时间范围和标签过滤
+- SQLite FTS5 全文搜索
+- 轻量确定性 n-gram 本地回退向量
+- 可选 OpenAI-compatible Embedding API
+- 云端 Embedding 批量重建任务
+- 云端向量索引按模型名称隔离，重启后可恢复语义搜索结果
+- 文件监听后的单文件增量同步，而不是每次变化都全量扫描
+
+### AI Assistant / Agent
+
+- 使用 OpenAI-compatible Chat Completions API
+- 支持原生 JSON Schema Tool Calling
+- 兼容不支持 Tool Calling 的服务，通过 `[ACTION:{...}]` 回退
+- 支持搜索、打开、移动、复制、重命名、删除、导入、标签和安全空间操作
+- 优先使用 `file_id`，避免模型直接生成并执行任意路径
+- 高风险文件操作必须经过用户确认
+- 批量操作计划预览、逐项确认和批量确认
+- 操作历史和部分操作撤销
+- 后台任务中心、进度通知、取消和失败重试
+
+## 文件类型边界
+
+项目会对工作区内的普通文件统一建立元数据索引，因此图片、音频、视频和压缩包并不会被完全忽略。它们可以被搜索和管理，但当前内容理解主要面向可提取文本的文件。
+
+| 文件类型 | 文件级管理 | 内容提取 / AI 理解 |
+|---|---:|---:|
+| TXT、MD、LOG、JSON、XML、HTML | 支持 | 支持 |
+| 代码、配置和脚本文件 | 支持 | 支持 |
+| PDF | 支持 | 支持文本型 PDF；扫描型 PDF 暂无 OCR |
+| DOCX | 支持 | 支持 |
+| XLSX、CSV、TSV | 支持 | 支持 |
+| XLS | 支持 | 支持基础表格文本提取；复杂格式建议优先使用 XLSX |
+| PPT、PPTX | 支持 | 当前暂无演示文稿内容提取 |
+| JPG、PNG、GIF、WEBP 等图片 | 支持 | 当前暂无 OCR / 图片理解 |
+| MP3、WAV、FLAC 等音频 | 支持 | 当前暂无语音转写 |
+| MP4、AVI、MKV、MOV 等视频 | 支持 | 当前暂无视频转写或视觉分析 |
+| ZIP、RAR、7Z 等压缩包 | 支持 | 当前不自动解析压缩包内部内容 |
+
+因此当前版本适合展示“文本文件和办公文档的 AI 搜索与整理”，而不是声称已经完成全格式多模态理解。后续可以在不改变 Agent 和索引主架构的情况下增加 OCR、Whisper 转写和视觉模型能力。
+
+## 技术架构
+
+```text
+React 19 + TypeScript + Vite + Zustand
+                    |
+              Tauri IPC
+                    |
+Rust / Tauri 2 backend
+  |          |             |
+SQLite   文件系统       API Client
+FTS5     Watcher        Chat / Embedding
+  |          |             |
+  +------ Agent Tool Layer ------+
+         file_id 校验
+         工作区边界校验
+         用户确认
+         操作历史
+```
+
+### 关键模块
+
+- `src/pages/SmartSearch.tsx`：搜索、目录浏览、标签和文件操作入口
+- `src/pages/SmartAssistant.tsx`：对话、Agent 操作确认和任务中心
+- `src/store/chatStore.ts`：聊天流式事件、待确认 Action 和前端状态
+- `src-tauri/src/ai/api_client.rs`：OpenAI-compatible Chat / Embedding API
+- `src-tauri/src/chat.rs`：RAG 上下文、工具 Schema、Action 兼容解析
+- `src-tauri/src/store/mod.rs`：SQLite 文件索引、聊天、任务和操作历史
+- `src-tauri/src/scanner/mod.rs`：全量扫描、工作区边界和单文件扫描
+- `src-tauri/src/watcher.rs`：文件变化到 SQLite 和搜索缓存的增量同步
+- `src-tauri/src/lib.rs`：Tauri 命令、安全文件工具和应用装配
+- `src-tauri/src/vault.rs`：安全空间和文件加密
+
+## API 配置
+
+应用默认使用 API 模式，不再下载或加载本地大模型。
+
+在设置页面填写：
+
+### Chat / Agent API
+
+- Base URL，例如：`https://api.example.com/v1`
+- 模型名称
+- API Key
+
+用于：
+
+- 对话
+- 文件问答
+- Agent 工具调用
+- 操作计划生成
+
+### Embedding API
+
+- Base URL
+- Embedding 模型
+- API Key
+
+用于：
+
+- 云端语义检索
+- 批量重建向量索引
+
+未配置 Embedding API 时，应用仍可使用文件名、路径、标签、时间过滤、SQLite FTS5 和本地 fallback 搜索。
+
+项目不会把 API Key 写入源码、Git 或日志。配置保存在操作系统应用数据目录中。
+
+## 安全设计
+
+文件操作是本项目 Agent 设计的重点。模型只负责理解用户意图和提出工具调用，不能直接获得任意命令执行权限。
+
+Rust 后端会校验：
+
+- `file_id` 是否存在于当前工作区索引
+- 文件是否仍然存在
+- 路径是否位于当前工作区内
+- 是否包含绝对路径、Windows 驱动器前缀或路径穿越
+- 重命名名称是否包含目录分隔符
+- 操作是否经过前端用户确认
+
+执行后的结果会写入操作历史。重命名、移动和部分标签操作支持生成逆操作并撤销；删除、加密等高风险操作不会伪造不安全的自动回滚。
+
+## 数据位置
+
+- 用户配置：操作系统应用数据目录下的 `SemanticDrive/config.json`
+- 工作区数据库：`<workspace>/.semanticdrive/metadata.db`
+- 云端向量：工作区数据库中的 `cloud_embeddings` 表
+- Agent 任务：工作区数据库中的 `agent_tasks` 表
+- 操作历史：工作区数据库中的 `action_history` 表
+- 安全空间：`<workspace>/.semanticdrive/vault/`
+- Rust 编译缓存：`src-tauri/target/`，已被 Git 忽略，不应打包提交
+
+## 开发文档
+
+- [构建与启动指南](BUILD.md)：Windows 开发、打包、首次运行和工作区说明。
+
+当前版本默认通过 OpenAI-compatible API 提供 Chat / Embedding 能力，不再需要下载或启动本地大模型。图片、音频、视频和压缩包仍可作为普通文件管理，但暂未接入 OCR、语音转写、视觉理解或压缩包内部索引。
 ## 开发环境
 
 - Node.js 22+
 - Rust stable
 - Windows 10/11、macOS 12+ 或主流 Linux 桌面环境
-- Windows 构建需要 WebView2；Tauri 会使用系统 WebView2
+- Windows 构建需要 WebView2；Tauri 使用系统 WebView2 运行时
 
 ```bash
 npm install
-npm run dev          # 仅启动前端
-npm run tauri:dev    # 启动桌面应用
-npm run build        # 前端类型检查 + 生产构建
-npm run lint         # ESLint
+
+# 仅启动前端开发服务器
+npm run dev
+
+# 启动 Tauri 桌面应用
+npm run tauri:dev
+
+# 前端类型检查和生产构建
+npm run build
+
+# ESLint
+npm run lint
+
+# Rust 编译检查
 cd src-tauri
-cargo check          # Rust 编译检查
-cargo test           # Rust 单元测试（Windows GNU 环境可能需要匹配的运行时 DLL）
+cargo check
+
+# Rust 单元测试
+cargo test
 ```
+
+Windows GNU 工具链如果缺少匹配的 MinGW 运行时 DLL，`cargo test` 可能在测试二进制启动阶段出现 `STATUS_ENTRYPOINT_NOT_FOUND`。这属于本地运行时环境问题；`cargo check` 仍然可以用于验证 Rust 编译。
 
 ## 首次使用
 
-1. 运行应用，进入“设置”。
-2. 选择一个工作区目录。工作区可以是用户目录、项目目录、外接硬盘目录或同步盘目录。
-3. 填写聊天 API：
-   - Base URL 形如 `https://api.example.com/v1`
-   - 模型填写服务商提供的模型名
-   - 填写 API Key
-4. 如需语义搜索，再填写嵌入 API。未填写时仍能使用关键词和全文搜索。
-5. 回到“智能搜索”并扫描。首次扫描提取文件元数据和文本，后续扫描只处理新增或修改文件。
-6. 在“智能助手”中提出请求。涉及文件变更时，先检查待执行操作，再逐项或批量确认。
+1. 启动应用并进入“设置”。
+2. 选择一个工作区目录。
+3. 填写 Chat / Agent API 的地址、模型和 API Key。
+4. 如果需要语义搜索，再填写 Embedding API。
+5. 回到“智能搜索”并执行首次扫描。
+6. 在“智能助手”中进行自然语言搜索或整理请求。
+7. 对涉及文件变化的操作检查计划，确认后再执行。
+8. 如需云端语义索引，在“任务中心”启动 Embedding 重建任务。
 
-## Agent 设计
+## 典型使用流程
 
-当前 Agent 采用“**模型负责理解与提出计划，应用负责工具执行和安全校验**”的边界：
-
-```text
-用户请求
-  -> 意图识别 / RAG 文件上下文
-  -> API 原生 JSON Schema tool calling（不支持时回退 [ACTION:{...}]）
-  -> 前端展示批量计划并逐项/批量确认
-  -> 用户确认
-  -> Rust 工具层校验 file_id、工作区边界和参数
-  -> 执行文件操作、更新 SQLite、返回审计结果
-```
-
-当前工具包括：
-
-- 搜索和打开文件
-- 移动、复制、导入、重命名、删除
-- 设置、添加、移除标签
-- 添加到安全空间
-- 跳转到分类和去重页面
-
-操作历史和后台任务都持久化在工作区 `.semanticdrive/metadata.db` 中。云端 Embedding 任务会以批次执行并发出 `task-progress` 事件；应用重启后，未完成任务会保留为可重试记录。
-
-## 数据与配置位置
-
-- 用户配置：操作系统应用数据目录下的 `SemanticDrive/config.json`
-- 工作区索引：工作区下的 `.semanticdrive/metadata.db`
-- 安全空间：工作区下的 `.semanticdrive/vault/`
-- Rust 编译缓存：`src-tauri/target/`，不应提交到 Git 或打包分发
-
-## 代码结构
+推荐用一个完整场景验证项目，而不是逐个验证孤立功能：
 
 ```text
-src/
-  components/       UI 组件、文件浏览器、欢迎引导
-  pages/            搜索、助手、分类、整理、安全空间、设置
-  store/            Zustand 状态
-  types/            前后端配置类型
-src-tauri/src/
-  scanner/          扫描器、工作区边界和单文件增量扫描
-  watcher.rs        文件监听事件到 SQLite/搜索索引的增量同步
-  store/            SQLite 元数据、标签、聊天记录、配置
-  ai/               API 客户端、回退嵌入、查询解析、混合搜索、文本提取
-  chat.rs           Agent 提示词、动作协议、RAG 上下文
-  lib.rs            Tauri 命令、安全文件工具和应用装配（任务/监听逻辑已拆出）
-  vault.rs          加密安全空间
+1. 选择工作区并完成首次扫描
+2. 输入“找出最近修改的合同文件”
+3. 展示 FTS / 语义搜索结果和文件上下文
+4. 输入“把这些文件移动到合同/2026，并添加待归档标签”
+5. 展示 JSON Schema Tool Calling 生成的批量计划
+6. 用户逐项或批量确认
+7. 展示 Rust 安全校验、SQLite 更新和操作历史
+8. 撤销移动或标签操作
+9. 在系统文件管理器中修改文件，展示 watcher 增量同步
 ```
+
+项目的重点不是“模型自己执行一切”，而是提供一个真实可控的 AI 文件管理闭环：
+
+```text
+AI 理解
++ 检索增强
++ 结构化工具调用
++ 前端审批
++ Rust 安全执行
++ 数据持久化
++ 增量索引
++ 任务与审计
+```
+
+## 当前限制与后续方向
+
+当前版本暂不包含：
+
+- 图片 OCR 和视觉内容理解
+- 音频 / 视频语音转写
+- 扫描型 PDF OCR
+- 压缩包内部的自动索引
+- 删除操作的完整回收站式回滚
+- 多步骤 Agent 的自动观察、重新规划和循环执行
+
+后续可以继续完善：
+
+1. 将 Agent 命令拆分为独立的 `agent/` 和 `commands/` 模块。
+2. 增加目录级批量整理计划和更完善的执行队列。
+3. 为云端 API 增加并发限制、重试退避和成本统计。
+4. 增加 OCR、Whisper 转写和多模态 Embedding 插件。
+5. 增加 Windows 回收站、macOS Finder 和 Linux 文件管理器的原生适配。
+6. 增加 CI，自动执行前端构建、Lint、Rust 编译和跨平台测试。
 
 ## 设计原则
 
-- 不把 API Key 写入源码、Git 或日志
-- 不让 LLM 直接执行文件操作；必须经过用户确认和 Rust 校验
-- 不依赖本地大模型作为启动前置条件
-- 不把应用安装目录自动当成用户工作区；优先使用用户选择的目录
-- 大量文件操作放到后台线程，UI 只接收进度事件
-- 索引更新采用增量策略，避免每次启动完整扫描
+- API-first，但保留本地 FTS 和 fallback 搜索能力
+- LLM 不直接执行文件操作
+- 所有高风险操作必须经过用户确认
+- 所有文件操作都限制在当前工作区
+- 优先使用稳定的 `file_id`，而不是信任模型生成的路径
+- 大量扫描、解析、索引和 Embedding 工作放到后台线程
+- 文件变化采用增量同步，避免频繁全量重建
+- 不把 API Key、用户文件内容或敏感信息写入 Git 和日志
+
+## License
+
+MIT

@@ -219,20 +219,23 @@ pub fn set_scan_root_override(path: Option<PathBuf>) -> Result<Option<PathBuf>, 
     Ok(canonical)
 }
 
-/// Get the user-selected scan root. For backwards compatibility, an app beside
-/// a removable drive still falls back to the legacy executable-derived root.
+/// Get the active workspace. A user-selected root always wins. On first run,
+/// prefer the user's Documents folder (or home directory) instead of silently
+/// scanning the application/install directory. This avoids indexing source,
+/// build artifacts, or unrelated files during a demo.
 pub fn get_scan_root() -> Result<PathBuf, String> {
     if let Some(root) = scan_root_override().read().map_err(|e| e.to_string())?.clone() {
         return Ok(root);
     }
-    let exe_dir = get_device_root()?;
-    // Go one level up from exe directory to scan the containing folder/drive root
-    match exe_dir.parent() {
-        Some(parent) => Ok(parent.to_path_buf()),
-        None => Ok(exe_dir), // already at root, can't go up
+    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")) {
+        let home = PathBuf::from(home);
+        let documents = home.join("Documents");
+        if documents.is_dir() { return Ok(documents); }
+        if home.is_dir() { return Ok(home); }
     }
+    // Portable fallback for environments without a home-directory variable.
+    get_device_root()
 }
-
 /// Start a polling filesystem watcher that checks for changes every 2 seconds.
 /// The callback is called on a background thread for each relevant event.
 /// Returns a `PollWatcher` which must be kept alive for the app's lifetime.

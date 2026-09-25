@@ -109,12 +109,12 @@ pub fn extract_text_docx(path: &Path) -> Result<String, String> {
     Ok(text.trim().to_string())
 }
 
-/// Extract text from XLSX/XLS files using calamine
-pub fn extract_text_xlsx(path: &Path) -> Result<String, String> {
-    use calamine::{open_workbook, Reader, Xlsx};
+/// Extract text from XLSX/XLS files using calamine's format auto-detection.
+pub fn extract_text_spreadsheet(path: &Path) -> Result<String, String> {
+    use calamine::{open_workbook_auto, Reader};
 
-    let mut workbook: Xlsx<_> =
-        open_workbook(path).map_err(|e| format!("Cannot open spreadsheet: {}", e))?;
+    let mut workbook = open_workbook_auto(path)
+        .map_err(|e| format!("Cannot open spreadsheet: {}", e))?;
 
     let mut text = String::new();
     let sheet_names = workbook.sheet_names().to_vec();

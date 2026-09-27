@@ -270,9 +270,29 @@ pub fn detect_intent(message: &str) -> ChatIntent {
         return ChatIntent::SummarizeFile;
     }
 
-    // If message contains file-related keywords without clear intent, still search
-    // But only if not already classified as an action above
-    let file_keywords = ["文件", "文档", "文件夹", "目录", "内容", "我记得"];
+    // Questions that refer to the user's indexed workspace should search even when
+    // they do not explicitly say "search". For example, a natural question such as
+    // "副业咖啡车的首批预算、营业时间和供应商分别是什么？" is still a request
+    // for facts from local files, not a general-knowledge question.
+    let question_patterns = [
+        "有哪些", "什么", "分别是什么", "多少", "哪些", "哪一个", "哪种",
+        "怎么", "何时", "什么时候", "包含", "相关", "是否", "多久",
+    ];
+    let workspace_topics = [
+        "文件", "文档", "资料", "文件夹", "目录", "内容", "我记得",
+        "预算", "供应商", "营业时间", "保险", "旅行", "咖啡", "订单",
+        "合同", "课程", "维修", "报销", "计划", "家庭", "副业", "停车位",
+        "儿童早餐", "续费",
+    ];
+    let is_workspace_question = question_patterns.iter().any(|p| msg.contains(p))
+        && workspace_topics.iter().any(|topic| msg.contains(topic));
+    if is_workspace_question {
+        return ChatIntent::SearchFiles;
+    }
+
+    // If a message contains an explicit file/workspace reference, search even if
+    // the wording is not phrased as a question (for example, "这个目录里的咖啡资料").
+    let file_keywords = ["文件", "文档", "资料", "文件夹", "目录", "内容", "我记得"];
     if file_keywords.iter().any(|k| msg.contains(k)) {
         return ChatIntent::SearchFiles;
     }
@@ -555,6 +575,30 @@ pub fn tool_calls_to_actions(calls: &[crate::ai::api_client::ChatToolCall]) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── detect_intent ──
+
+    #[test]
+    fn test_detect_intent_for_natural_language_workspace_question() {
+        assert_eq!(
+            detect_intent("副业咖啡车的首批预算、营业时间和供应商分别是什么？"),
+            ChatIntent::SearchFiles
+        );
+        assert_eq!(
+            detect_intent("家里最近有哪些需要续费或提前准备的保险？"),
+            ChatIntent::SearchFiles
+        );
+    }
+
+    #[test]
+    fn test_detect_intent_for_explicit_search_and_general_chat() {
+        assert_eq!(
+            detect_intent("找出国庆旅行中和停车位、儿童早餐有关的资料"),
+            ChatIntent::SearchFiles
+        );
+        assert_eq!(detect_intent("你好，你能做什么？"), ChatIntent::GeneralChat);
+        assert_eq!(detect_intent("今天天气怎么样？"), ChatIntent::GeneralChat);
+    }
 
     // ── parse_actions ──
 

@@ -438,6 +438,19 @@ impl MetadataStore {
         Ok(entries)
     }
 
+    /// Load all previously extracted text so the in-memory search cache can be
+    /// restored after an application restart without re-scanning the workspace.
+    pub fn get_indexed_contents(&self) -> Result<Vec<(String, String)>, String> {
+        let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;
+        let mut stmt = conn
+            .prepare("SELECT id, content_text FROM files WHERE content_text IS NOT NULL AND length(content_text) > 0")
+            .map_err(|e| format!("Prepare error: {}", e))?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .map_err(|e| format!("Query error: {}", e))?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
     /// Get extracted text content for a file by ID.
     pub fn get_content_text(&self, id: &str) -> Result<Option<String>, String> {
         let conn = self.conn.lock().map_err(|e| format!("Lock error: {}", e))?;

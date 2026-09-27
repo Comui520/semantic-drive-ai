@@ -385,7 +385,12 @@ pub fn search_to_rag_context(
 ) -> Result<(String, Vec<FileRef>), String> {
     let files = store.get_all_files()?;
     let content_scores = store.search_content_fts5(query).unwrap_or_default();
-    let content_score_map: std::collections::HashMap<String, f32> = content_scores.into_iter().collect();
+    // SQLite FTS5 bm25 rank is negative (lower is better); convert it to the
+    // positive 0..1 score expected by the hybrid search engine.
+    let content_score_map: std::collections::HashMap<String, f32> = content_scores
+        .into_iter()
+        .map(|(id, rank)| (id, 1.0 / (1.0 + rank.abs())))
+        .collect();
     // Use a larger max_results for the engine, then filter by score threshold afterward
     let results = search_engine.search(query, &files, (max_results * 2).max(20), bilingual, Some(&content_score_map));
 
@@ -455,6 +460,7 @@ pub fn build_chat_messages_api(
     if let Some(rag) = rag_context {
         user_content.push_str("\n\n--- 相关文件信息 ---\n");
         user_content.push_str(rag);
+        user_content.push_str("\n\n请直接根据以上检索结果回答用户问题。不要再次调用 search_files，也不要只给搜索计划；如果结果不足，请明确说明不足。");
     }
     messages.push(ChatApiMessage::user(&user_content));
 

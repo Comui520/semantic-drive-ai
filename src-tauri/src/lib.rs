@@ -1212,9 +1212,12 @@ async fn chat_send(
         // Detect intent
         let intent = chat::detect_intent(&msg);
 
-        // Build RAG context if search intent (skip if files already attached)
+        // Build RAG context if search intent (skip if files already attached).
+        // Search questions already have local retrieval results, so the LLM
+        // should summarize them instead of emitting a second search action.
+        let retrieval_intent = matches!(&intent, ChatIntent::SearchFiles | ChatIntent::SummarizeFile);
         let has_attached_files = fc.is_some();
-        let (rag_context, assistant_file_refs) = match intent {
+        let (rag_context, assistant_file_refs) = match &intent {
             ChatIntent::SearchFiles | ChatIntent::SummarizeFile if !has_attached_files => {
                 let search_engine = state.search_engine.read().map_err(|e| e.to_string())?;
                 let store_lock = state.store.lock().map_err(|e| e.to_string())?;
@@ -1264,7 +1267,10 @@ async fn chat_send(
         let messages = chat::build_chat_messages_api(
             &history, &msg, rag_context.as_deref(), fc.as_deref(),
         );
-        let tool_defs = chat::action_tools();
+        let mut tool_defs = chat::action_tools();
+        if retrieval_intent {
+            tool_defs.retain(|tool| tool.function.name != "search_files");
+        }
         let mut emit_token = |token: String| {
             let _ = app_for_gen.emit("chat-token", ChatTokenEvent {
                 session_id: sid.clone(), token, done: false,
@@ -2400,6 +2406,18 @@ pub fn run() {
                     let data_dir = root.join(".semanticdrive");
                     if data_dir.join("metadata.db").exists() {
                         if let Ok(db) = MetadataStore::open(&data_dir) {
+                            // Restore extracted text into the in-memory search cache.
+                            // Without this, a fresh app process can browse the existing
+                            // database but chat/RAG search sees zero indexed content
+                            // until the user runs a full scan again.
+                            if let Ok(contents) = db.get_indexed_contents() {
+                                if let Ok(mut search) = state.search_engine.write() {
+                                    for (id, content) in &contents {
+                                        search.index_file(id, content);
+                                    }
+                                    log::info!("Restored {} indexed text files", contents.len());
+                                }
+                            }
                             if let Ok(mut store_lock) = state.store.lock() {
                                 *store_lock = Some(db);
                             }

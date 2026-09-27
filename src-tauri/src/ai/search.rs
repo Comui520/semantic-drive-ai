@@ -152,9 +152,14 @@ impl SearchEngine {
                 let kw_score = keyword_score(query, &file.name, &file.path);
 
                 // 3. Content keyword match (extracted text) — uses FTS5 scores if provided
-                let content_score = content_scores
+                let local_content_score = content_keyword_score(query, &self.contents, &file.id);
+                let fts_content_score = content_scores
                     .and_then(|scores| scores.get(&file.id).copied())
-                    .unwrap_or_else(|| content_keyword_score(query, &self.contents, &file.id));
+                    .unwrap_or(0.0);
+                // FTS and the in-memory matcher are complementary. Keep the
+                // stronger score instead of letting a sparse FTS hit hide a
+                // better natural-language substring match.
+                let content_score = fts_content_score.max(local_content_score);
 
                 // Combined score: adaptive weighted combination.
                 // When vector is reliable (BGE model loaded), weight it heavily.
@@ -314,9 +319,39 @@ pub fn split_terms(query: &str) -> Vec<String> {
         terms.push(current);
     }
 
-    // Filter out single-character terms (likely noise)
-    terms.retain(|t| t.chars().count() >= 2);
-    terms
+    // Break long Chinese query segments around common function words.
+    // Without this step, a natural-language query such as
+    // “家里最近有哪些需要续费或提前准备的保险” becomes one giant term
+    // and cannot match the shorter phrases that actually occur in files.
+    let stopwords = [
+        "找出", "帮我", "找一下", "搜索", "查找", "搜一下", "有没有",
+        "最近", "哪些", "需要", "提前", "准备", "分别", "是什么",
+        "有关", "相关", "资料", "文件", "内容", "中", "和", "或", "与",
+        "的", "在", "里", "把", "到", "并", "及", "请", "不要",
+        "任何", "一下",
+    ];
+    let mut refined = Vec::new();
+    for term in terms {
+        let mut fragments = vec![term];
+        for stopword in stopwords {
+            let mut next = Vec::new();
+            for fragment in fragments {
+                let mut rest = fragment.as_str();
+                while let Some(index) = rest.find(stopword) {
+                    let before = &rest[..index];
+                    if !before.is_empty() { next.push(before.to_string()); }
+                    rest = &rest[index + stopword.len()..];
+                }
+                if !rest.is_empty() { next.push(rest.to_string()); }
+            }
+            fragments = next;
+        }
+        refined.extend(fragments);
+    }
+
+    // Filter out single-character terms and pure stopwords (likely noise).
+    refined.retain(|t| t.chars().count() >= 2 && !stopwords.contains(&t.as_str()));
+    refined
 }
 
 /// Simple keyword matching score — supports Chinese via boundary splitting.
@@ -428,6 +463,34 @@ fn get_snippet(contents: &HashMap<String, String>, file_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_split_terms_extracts_meaningful_chinese_phrases() {
+        assert_eq!(
+            split_terms("家里最近有哪些需要续费或提前准备的保险"),
+            vec!["续费".to_string(), "保险".to_string()]
+        );
+
+        let terms = split_terms("找出国庆旅行中和停车位、儿童早餐有关的资料");
+        assert!(terms.contains(&"国庆旅行".to_string()));
+        assert!(terms.contains(&"停车位".to_string()));
+        assert!(terms.contains(&"儿童早餐".to_string()));
+    }
+
+    #[test]
+    fn test_content_keyword_score_matches_long_natural_language_query() {
+        let mut contents = HashMap::new();
+        contents.insert(
+            "insurance".to_string(),
+            "家庭意外险将在十月续费，医疗险将在十二月续费。".to_string(),
+        );
+        let score = content_keyword_score(
+            "家里最近有哪些需要续费或提前准备的保险",
+            &contents,
+            "insurance",
+        );
+        assert!(score > 0.0, "natural-language Chinese query should match content");
+    }
 
     #[test]
     fn test_keyword_score_exact_match() {

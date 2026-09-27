@@ -1123,6 +1123,43 @@ fn rename_chat_session(state: State<AppState>, session_id: String, title: String
     db.update_chat_session_title(&session_id, &title)
 }
 
+/// Build a compact, persisted reference for a file entry so an Agent action
+/// can use a stable file_id instead of guessing a path.
+fn chat_file_ref(db: &MetadataStore, file: &FileEntry) -> chat::FileRef {
+    let snippet = db
+        .get_content_text(&file.id)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .chars()
+        .take(300)
+        .collect();
+    chat::FileRef {
+        file_id: file.id.clone(),
+        file_name: file.name.clone(),
+        file_path: file.path.clone(),
+        snippet,
+    }
+}
+
+/// Resolve an explicitly mentioned filename against the indexed workspace.
+/// Exact filename mentions are intentionally preferred over fuzzy search so an
+/// action request such as "给周末咖啡车经营计划.md添加标签" becomes a
+/// deterministic file-id action instead of a clickable search suggestion.
+fn resolve_chat_file_refs(db: &MetadataStore, message: &str) -> Result<Vec<chat::FileRef>, String> {
+    let files = db.get_all_files()?;
+    let message_lower = message.to_lowercase();
+    let mut matches = Vec::new();
+    for file in files {
+        if message_lower.contains(&file.name.to_lowercase()) {
+            matches.push(chat_file_ref(db, &file));
+        }
+    }
+    matches.sort_by(|a, b| a.file_path.cmp(&b.file_path));
+    matches.dedup_by(|a, b| a.file_id == b.file_id);
+    Ok(matches)
+}
+
 #[tauri::command]
 async fn chat_send(
     app: tauri::AppHandle,
@@ -1141,22 +1178,24 @@ async fn chat_send(
         let store_lock = state.store.lock().map_err(|e| e.to_string())?;
         let db = store_lock.as_ref().ok_or_else(|| "数据库未初始化".to_string())?;
 
-        // Compute file refs for attached files
-        let user_file_refs_json: Option<String> = if let Some(ref ids) = fid_for_save {
+        // Compute file refs for attached files. If the user explicitly writes
+        // an indexed filename in an action request, resolve it here as well so
+        // the action can work without forcing an attachment or search click.
+        let mut refs: Vec<chat::FileRef> = Vec::new();
+        if let Some(ref ids) = fid_for_save {
             if !ids.is_empty() {
                 let files = db.get_files_by_ids(ids).unwrap_or_default();
-                let refs: Vec<chat::FileRef> = files.iter().map(|f| {
-                    let content = db.get_content_text(&f.id).ok().flatten().unwrap_or_default();
-                    chat::FileRef {
-                        file_id: f.id.clone(),
-                        file_name: f.name.clone(),
-                        file_path: f.path.clone(),
-                        snippet: content.chars().take(300).collect(),
-                    }
-                }).collect();
-                serde_json::to_string(&refs).ok()
-            } else { None }
-        } else { None };
+                refs = files.iter().map(|file| chat_file_ref(db, file)).collect();
+            }
+        }
+        if refs.is_empty() {
+            refs = resolve_chat_file_refs(db, &msg_for_save).unwrap_or_default();
+        }
+        let user_file_refs_json = if refs.is_empty() {
+            None
+        } else {
+            serde_json::to_string(&refs).ok()
+        };
 
         let msg_id = uuid::Uuid::new_v4().to_string();
         db.insert_chat_message(&msg_id, &sid_for_save, "user", &msg_for_save, user_file_refs_json.as_deref())?;
@@ -1173,7 +1212,7 @@ async fn chat_send(
                 format!("- {} (ID: {}, 路径: {})\n  内容预览: {}", r.file_name, r.file_id, r.file_path, r.snippet)
             }).collect::<Vec<_>>().join("\n");
             format!(
-                "附加文件路径列表（请原样使用这些路径）：\n{}\n\n{}\n\n请分析以上附加文件，你可以给出以下建议：\n\
+                "当前明确关联文件（路径仅供展示，执行操作必须使用 file_id）：\n{}\n\n{}\n\n请分析以上附加文件，你可以给出以下建议：\n\
                 1. 文件是否重复或过大需要清理（建议去整理建议页面）\n\
                 2. 是否包含隐私信息需要保护（建议使用安全空间加密）\n\
                 3. 文件类型是什么，建议归到哪个分类\n\
@@ -1205,6 +1244,7 @@ async fn chat_send(
     // also used after generation to prevent a model from emitting a duplicate
     // clickable search action after local RAG has already run.
     let detected_intent = chat::detect_intent(&message);
+    let action_intent = chat::is_file_action_request(&message);
     let retrieval_intent = matches!(
         &detected_intent,
         ChatIntent::SearchFiles | ChatIntent::SummarizeFile
@@ -1215,7 +1255,7 @@ async fn chat_send(
     let sid = session_id.clone();
     let msg = message.clone();
     let fc = combined_context.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>), String> {
+    let result = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>, Option<Vec<chat::FileRef>>), String> {
         let state = app_for_gen.state::<AppState>();
         let intent = detected_intent;
 
@@ -1255,6 +1295,11 @@ async fn chat_send(
             .collect();
         drop(store_lock);
 
+        // The latest attached/explicitly resolved file is the target for
+        // conversational follow-ups. Do not combine it with stale old turns.
+        let target_refs = chat::latest_file_refs(&history, 8);
+        let target_ref = if target_refs.len() == 1 { target_refs.first() } else { None };
+
         // Reset cancellation flag
         state.chat_cancelled.store(false, Ordering::Relaxed);
 
@@ -1274,7 +1319,9 @@ async fn chat_send(
             &history, &msg, rag_context.as_deref(), fc.as_deref(),
         );
         let mut tool_defs = chat::action_tools();
-        if retrieval_intent {
+        if retrieval_intent || action_intent {
+            // Search is a read/navigation action. It must not replace an
+            // explicit file mutation request with a clickable suggestion.
             tool_defs.retain(|tool| tool.function.name != "search_files");
         }
         let mut emit_token = |token: String| {
@@ -1301,26 +1348,66 @@ async fn chat_send(
         // Native tool calling is normalized to the same action envelope used by
         // older providers. This keeps confirmation, validation, and history in
         // one code path while allowing true JSON-schema tool calls by default.
-        let tool_actions = tool_calls_to_actions(&completion.tool_calls);
-        let tool_actions: Vec<FileAction> = if retrieval_intent {
-            tool_actions
+        let native_actions = tool_calls_to_actions(&completion.tool_calls);
+        let marker_actions = chat::parse_actions(&completion.text);
+        let mut tool_actions: Vec<FileAction> = if retrieval_intent || action_intent {
+            native_actions
                 .into_iter()
                 .filter(|action| !matches!(action, FileAction::SearchFiles { .. }))
                 .collect()
         } else {
-            tool_actions
+            native_actions
         };
-        let mut full_response = completion.text;
+        let mut full_response = completion.text.clone();
+
+        // Legacy providers may return an [ACTION:...] marker in text rather
+        // than a native tool call. Normalize it into the same action list before
+        // applying the deterministic fallback below.
+        if tool_actions.is_empty() && !marker_actions.is_empty() {
+            tool_actions = if retrieval_intent || action_intent {
+                marker_actions
+                    .into_iter()
+                    .filter(|action| !matches!(action, FileAction::SearchFiles { .. }))
+                    .collect()
+            } else {
+                marker_actions
+            };
+            full_response = chat::strip_action_markers(&completion.text);
+        }
+
+        // Some OpenAI-compatible providers return a natural-language plan even
+        // when tools are supplied. For an explicit action with one unambiguous
+        // target, prefer the narrow local parser over model-generated arguments.
+        // It only emits a pending action; the frontend/Rust confirmation gate
+        // still executes it. This keeps a demo deterministic across providers.
+        if action_intent {
+            if let Some(action) = chat::infer_explicit_file_action(&msg, target_ref) {
+                full_response = "已识别目标文件，已生成待确认操作。".to_string();
+                tool_actions.clear();
+                tool_actions.push(action);
+            } else if tool_actions.is_empty() {
+                if target_refs.is_empty() {
+                    full_response = "这个操作需要明确的目标文件。请先附加文件，或在消息中写出完整文件名。".to_string();
+                } else if target_refs.len() > 1 {
+                    full_response = "当前对话关联了多个文件，请先明确要操作哪一个文件。".to_string();
+                }
+            }
+        }
         for action in &tool_actions {
             if let Ok(json) = serde_json::to_string(action) {
                 full_response.push_str(&format!("\n[ACTION:{}]", json));
             }
         }
-        Ok((full_response, assistant_file_refs_json))
+        let action_refs = if target_refs.is_empty() {
+            assistant_file_refs.clone()
+        } else {
+            Some(target_refs)
+        };
+        Ok((full_response, assistant_file_refs_json, action_refs))
     }).await.map_err(|e| format!("Task panicked: {}", e))?;
 
     match result {
-        Ok((response, assistant_file_refs_json)) => {
+        Ok((response, assistant_file_refs_json, action_file_refs)) => {
             // Reject empty responses — model generated nothing
             if response.trim().is_empty() {
                 return Err("模型未生成有效回复，请重试".to_string());
@@ -1332,7 +1419,7 @@ async fn chat_send(
             // Keep the marker-free response text, but suppress only search_files;
             // other explicit file operations still go through confirmation.
             let parsed_actions = parse_actions(&response);
-            let actions: Vec<FileAction> = if retrieval_intent {
+            let actions: Vec<FileAction> = if retrieval_intent || action_intent {
                 parsed_actions
                     .iter()
                     .filter(|action| !matches!(action, FileAction::SearchFiles { .. }))
@@ -1351,6 +1438,7 @@ async fn chat_send(
                 let _ = app.emit("chat-actions", ChatActionsEvent {
                     session_id: session_id.clone(),
                     actions,
+                    file_refs: action_file_refs,
                 });
             }
 

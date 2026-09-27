@@ -169,6 +169,10 @@ pub fn parse_actions(text: &str) -> Vec<FileAction> {
 pub struct ChatActionsEvent {
     pub session_id: String,
     pub actions: Vec<FileAction>,
+    /// File references resolved from the current message or recent conversation.
+    /// The frontend uses these to render action cards with names instead of raw IDs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_refs: Option<Vec<FileRef>>,
 }
 
 /// Strip all action markers from text, returning clean display text.
@@ -244,17 +248,26 @@ pub enum ChatIntent {
     Unknown,
 }
 
+/// Detect whether a message explicitly requests a file mutation or file-level
+/// action. These requests should never be routed to a generic search suggestion:
+/// the agent must use an attached/recently referenced file, or ask for one.
+pub fn is_file_action_request(message: &str) -> bool {
+    let msg = message.trim();
+    let action_patterns = [
+        "移动", "重命名", "删除", "复制", "移到", "放到", "搬到",
+        "改名", "删掉", "复制到", "拷贝", "导入", "加密", "添加到安全空间",
+        "设置标签", "添加标签", "增加标签", "打标签", "移除标签",
+        "删除标签", "打开", "查看位置",
+    ];
+    action_patterns.iter().any(|p| msg.contains(p))
+}
+
 /// Detect user intent from message text using rule-based keyword matching.
 pub fn detect_intent(message: &str) -> ChatIntent {
     let msg = message.trim();
 
     // File action intent — skip RAG, just let the LLM handle it
-    let action_patterns = [
-        "移动", "重命名", "删除", "复制", "移到", "放到", "搬到",
-        "改名", "删掉", "复制到", "拷贝", "导入", "加密", "添加到安全空间",
-        "设置标签", "打标签",
-    ];
-    if action_patterns.iter().any(|p| msg.contains(p)) {
+    if is_file_action_request(msg) {
         return ChatIntent::GeneralChat;
     }
 
@@ -300,6 +313,161 @@ pub fn detect_intent(message: &str) -> ChatIntent {
     ChatIntent::GeneralChat
 }
 
+/// Return the file references attached to the latest message that carried
+/// attachments. This is the safest conversational target for follow-ups such as
+/// "再给这个文件添加标签"; older turns are not silently mixed in.
+pub fn latest_file_refs(history: &[ChatMessage], max_files: usize) -> Vec<FileRef> {
+    if max_files == 0 {
+        return Vec::new();
+    }
+    for message in history.iter().rev() {
+        let Some(file_refs) = &message.file_refs else { continue; };
+        let mut refs = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for file_ref in file_refs {
+            if file_ref.file_id.is_empty() || !seen.insert(file_ref.file_id.clone()) {
+                continue;
+            }
+            refs.push(file_ref.clone());
+            if refs.len() >= max_files {
+                break;
+            }
+        }
+        if !refs.is_empty() {
+            return refs;
+        }
+    }
+    Vec::new()
+}
+
+/// Format file references as explicit agent context. The wording intentionally
+/// tells the model that a unique target can be acted on directly and that an
+/// ambiguous set must be clarified rather than guessed.
+pub fn format_file_refs_context(refs: &[FileRef]) -> Option<String> {
+    if refs.is_empty() {
+        return None;
+    }
+
+    let path_list = refs.iter()
+        .map(|file_ref| format!("  {} (ID: {})", file_ref.file_path, file_ref.file_id))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let details = refs.iter()
+        .map(|file_ref| format!(
+            "- {} (ID: {}, 路径: {})\n  内容预览: {}",
+            file_ref.file_name,
+            file_ref.file_id,
+            file_ref.file_path,
+            if file_ref.snippet.is_empty() { "（无文本预览）" } else { &file_ref.snippet },
+        ))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let target_rule = if refs.len() == 1 {
+        "当前只有一个明确目标文件。用户说‘这个文件’、‘它’或‘再给它……’时，直接使用该文件的 file_id，不要再次搜索，也不要要求用户手动提供 file_id。"
+    } else {
+        "当前有多个候选文件。涉及文件变更时不要猜测目标；先向用户列出候选并请求澄清，不要生成操作。"
+    };
+
+    Some(format!(
+        "--- 当前对话关联文件 ---\n{}\n\n{}\n\n{}\n\n文件操作规则：必须使用上面提供的 file_id；文件操作会先生成待确认操作，用户确认后才执行。",
+        path_list, details, target_rule,
+    ))
+}
+
+/// Infer a safe, file-id-based action for explicit Chinese commands when a
+/// provider returns only a plan instead of a native tool call. This is a narrow
+/// fallback: it requires exactly one resolved target and never executes anything
+/// by itself; the normal confirmation UI still gates the action.
+pub fn infer_explicit_file_action(message: &str, target: Option<&FileRef>) -> Option<FileAction> {
+    let target = target?;
+    let msg = message.trim();
+
+    fn clean_tail(value: &str) -> String {
+        value
+            .trim()
+            .trim_start_matches(['：', ':', '为', '是', '成'])
+            .trim()
+            .trim_matches(['"', '\'', '“', '”', '‘', '’', '。', '！', '!', '?', '？'])
+            .trim()
+            .to_string()
+    }
+
+    fn extract_after<'a>(message: &'a str, markers: &[&str]) -> Option<&'a str> {
+        markers.iter()
+            .filter_map(|marker| message.find(marker).map(|index| (index + marker.len(), marker)))
+            .min_by_key(|(index, _)| *index)
+            .map(|(index, _)| &message[index..])
+    }
+
+    fn extract_tags(message: &str, markers: &[&str]) -> Vec<String> {
+        let Some(tail) = extract_after(message, markers) else { return Vec::new(); };
+        let tail = clean_tail(tail);
+        tail.split(|c| matches!(c, '、' | ',' | '，' | ';' | '；' | '/' | '\\'))
+            .flat_map(|part| part.split("和").flat_map(|p| p.split("与")))
+            .map(clean_tail)
+            .filter(|tag| !tag.is_empty() && tag.chars().count() <= 32)
+            .collect()
+    }
+
+    // More specific tag operations must be checked before generic additions.
+    if msg.contains("移除标签") || msg.contains("删除标签") {
+        let tags = extract_tags(msg, &["移除标签", "删除标签"]);
+        if !tags.is_empty() {
+            return Some(FileAction::RemoveFileTags { file_id: target.file_id.clone(), tags });
+        }
+    }
+    if msg.contains("设置标签") {
+        let tags = extract_tags(msg, &["设置标签"]);
+        if !tags.is_empty() {
+            return Some(FileAction::SetFileTags { file_id: target.file_id.clone(), tags });
+        }
+    }
+    if msg.contains("添加标签") || msg.contains("增加标签") || msg.contains("打标签") {
+        let tags = extract_tags(msg, &["添加标签", "增加标签", "打标签"]);
+        if !tags.is_empty() {
+            return Some(FileAction::AddFileTags { file_id: target.file_id.clone(), tags });
+        }
+    }
+
+    if msg.contains("打开位置") || msg.contains("查看位置") || msg.contains("所在位置") {
+        return Some(FileAction::OpenFileLocationById { file_id: target.file_id.clone() });
+    }
+    if msg.contains("打开") || msg.contains("查看这个文件") {
+        return Some(FileAction::OpenFileById { file_id: target.file_id.clone() });
+    }
+    if msg.contains("安全空间") || msg.contains("加密") {
+        return Some(FileAction::VaultAddFileById { file_id: target.file_id.clone(), password: String::new() });
+    }
+    if msg.contains("删除") && !msg.contains("标签") {
+        return Some(FileAction::DeleteFileById { file_id: target.file_id.clone() });
+    }
+
+    for (markers, is_copy) in [
+        (&["复制到", "拷贝到"][..], true),
+        (&["移动到", "移到", "放到"][..], false),
+    ] {
+        if let Some(tail) = extract_after(msg, markers) {
+            let destination = clean_tail(tail);
+            if !destination.is_empty() {
+                return Some(if is_copy {
+                    FileAction::CopyFileById { file_id: target.file_id.clone(), destination }
+                } else {
+                    FileAction::MoveFileById { file_id: target.file_id.clone(), destination }
+                });
+            }
+        }
+    }
+
+    if let Some(tail) = extract_after(msg, &["重命名为", "重命名成", "改名为", "改名成"]) {
+        let new_name = clean_tail(tail);
+        if !new_name.is_empty() && !new_name.contains(['/', '\\']) {
+            return Some(FileAction::RenameFileById { file_id: target.file_id.clone(), new_name });
+        }
+    }
+
+    None
+}
+
 // ── Chat prompt templates ──
 
 const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家），运行在用户设备上的跨平台 AI 文件管理 Agent。\
@@ -340,6 +508,9 @@ const SYSTEM_PROMPT: &str = "你是 Semantic Drive AI（语义智能文件管家
 4. 文件夹路径直接作为 destination，不加额外子目录。
 5. 批量操作允许多个 action 标记同时出现。
 6. 你不会知道用户的加密空间密码——如果用户要求加密，发 vault_add 操作，系统用已解锁的密码。
+7. 如果“当前对话关联文件”只有一个目标，用户说“这个文件”“它”“再给它……”时都指向该 file_id；直接生成对应操作，不要调用 search_files，也不要要求用户手动复制 file_id。
+8. 用户明确要求添加、移动、复制、重命名、删除、打开或加密时，必须请求对应文件操作 tool；不要只回复“计划搜索”或把操作改成搜索建议。
+9. 只有在没有明确目标文件或用户明确要求检索时，才使用 search_files；如果有多个同名候选，先向用户澄清。
 
 ## 行为风格
 - 搜索文件后：列出 3-5 个最相关文件 + 主动建议下一步（分类/去重/标签/加密）
@@ -456,27 +627,56 @@ pub fn build_chat_messages_api(
 ) -> Vec<ChatApiMessage> {
     let mut messages: Vec<ChatApiMessage> = Vec::new();
 
-    // System message with file context if available
+    // System message with explicit current/recent file context. This is separate
+    // from the user text so a follow-up can resolve "this file" deterministically.
     let mut system_content = SYSTEM_PROMPT.to_string();
     if let Some(fc) = file_context {
-        system_content.push_str("\n\n--- 当前文件上下文 ---\n");
+        system_content.push_str("\n\n--- 当前消息附加文件上下文 ---\n");
         system_content.push_str(fc);
+    }
+    if let Some(recent_context) = format_file_refs_context(&latest_file_refs(history, 8)) {
+        system_content.push_str("\n\n");
+        system_content.push_str(&recent_context);
     }
     messages.push(ChatApiMessage::system(&system_content));
 
-    // Conversation history (limit to last 20 messages for API token limits)
+    // Conversation history (limit to last 20 messages for API token limits).
+    // Add compact file-reference context to the message that introduced it so
+    // providers that only replay text still receive the attachment relationship.
     let skip = if history.len() > 20 { history.len() - 20 } else { 0 };
     for msg in history.iter().skip(skip) {
         let role = if msg.role == "user" { "user" } else { "assistant" };
+        let content = if let Some(refs) = &msg.file_refs {
+            if let Some(ref_context) = format_file_refs_context(refs) {
+                format!("{}\n\n{}", msg.content, ref_context)
+            } else {
+                msg.content.clone()
+            }
+        } else {
+            msg.content.clone()
+        };
         messages.push(ChatApiMessage {
             role: role.to_string(),
-            content: msg.content.clone(),
+            content,
             tool_calls: None,
         });
     }
 
-    // Current user message with optional RAG context
+    // Current user message with optional RAG context. For action requests, repeat
+    // the target context directly in the current turn so the model cannot lose it
+    // behind a pronoun such as "这个文件".
     let mut user_content = user_message.to_string();
+    if let Some(fc) = file_context {
+        if is_file_action_request(user_message) {
+            user_content.push_str("\n\n--- 当前消息附加文件上下文 ---\n");
+            user_content.push_str(fc);
+        }
+    } else if is_file_action_request(user_message) {
+        if let Some(recent_context) = format_file_refs_context(&latest_file_refs(history, 8)) {
+            user_content.push_str("\n\n");
+            user_content.push_str(&recent_context);
+        }
+    }
     if let Some(rag) = rag_context {
         user_content.push_str("\n\n--- 相关文件信息 ---\n");
         user_content.push_str(rag);
@@ -598,6 +798,58 @@ mod tests {
         );
         assert_eq!(detect_intent("你好，你能做什么？"), ChatIntent::GeneralChat);
         assert_eq!(detect_intent("今天天气怎么样？"), ChatIntent::GeneralChat);
+    }
+
+    #[test]
+    fn test_latest_file_refs_preserve_follow_up_context() {
+        let history = vec![
+            ChatMessage {
+                id: "1".into(), session_id: "s".into(), role: "user".into(),
+                content: "给文件添加标签".into(), file_refs: Some(vec![FileRef {
+                    file_id: "coffee-id".into(), file_name: "周末咖啡车经营计划.md".into(),
+                    file_path: "02_工作与副业/周末咖啡车经营计划.md".into(), snippet: "计划内容".into(),
+                }]), created_at: "2026-09-27T00:00:00Z".into(),
+            },
+            ChatMessage {
+                id: "2".into(), session_id: "s".into(), role: "assistant".into(),
+                content: "已生成待确认操作".into(), file_refs: None,
+                created_at: "2026-09-27T00:00:01Z".into(),
+            },
+        ];
+        let refs = latest_file_refs(&history, 4);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].file_id, "coffee-id");
+        let context = format_file_refs_context(&refs).unwrap();
+        assert!(context.contains("coffee-id"));
+        assert!(context.contains("这个文件"));
+    }
+
+    #[test]
+    fn test_file_action_request_does_not_count_as_search() {
+        assert!(is_file_action_request("再给这个文件添加标签：可复购测试"));
+        assert_eq!(detect_intent("再给这个文件添加标签：可复购测试"), ChatIntent::GeneralChat);
+    }
+
+    #[test]
+    fn test_infer_file_actions_from_explicit_commands() {
+        let target = FileRef {
+            file_id: "coffee-id".into(),
+            file_name: "周末咖啡车经营计划.md".into(),
+            file_path: "02_工作与副业/周末咖啡车经营计划.md".into(),
+            snippet: String::new(),
+        };
+        assert!(matches!(
+            infer_explicit_file_action("给这个文件添加标签：副业、咖啡车、周末市集。", Some(&target)),
+            Some(FileAction::AddFileTags { ref file_id, ref tags }) if file_id == "coffee-id" && tags == &["副业", "咖啡车", "周末市集"]
+        ));
+        assert!(matches!(
+            infer_explicit_file_action("再给这个文件添加标签：可复购测试。", Some(&target)),
+            Some(FileAction::AddFileTags { ref file_id, ref tags }) if file_id == "coffee-id" && tags == &["可复购测试"]
+        ));
+        assert!(matches!(
+            infer_explicit_file_action("将这个文件移动到 01_家庭生活/", Some(&target)),
+            Some(FileAction::MoveFileById { ref file_id, ref destination }) if file_id == "coffee-id" && destination == "01_家庭生活/"
+        ));
     }
 
     // ── parse_actions ──

@@ -62,6 +62,7 @@ export type FileAction =
 export interface ChatActionsEvent {
   session_id: string
   actions: FileAction[]
+  file_refs?: FileRef[] | null
 }
 
 function describeAction(action: FileAction, fileMap?: Record<string, { name: string; path: string }>): string {
@@ -401,6 +402,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
       // Listen for AI-suggested file actions
       if (unlistenActions) { unlistenActions(); unlistenActions = null }
       unlistenActions = await listen<ChatActionsEvent>('chat-actions', (event) => {
+        // The backend resolves action targets from attachments and conversation
+        // context. Merge those refs immediately so action cards show the filename
+        // instead of a raw file_id, even when the current turn has no attachment.
+        if (event.payload.file_refs && event.payload.file_refs.length > 0) {
+          set((s) => {
+            const map = { ...s.fileIdMap }
+            for (const ref of event.payload.file_refs ?? []) {
+              if (ref.file_id) map[ref.file_id] = { name: ref.file_name, path: ref.file_path }
+            }
+            return { fileIdMap: map }
+          })
+        }
+
         // Separate navigation actions from file operations
         const navActions = new Set(['search_files', 'classify_files', 'find_duplicates'])
         const fileOps = event.payload.actions.filter(a => !navActions.has(a.cmd))

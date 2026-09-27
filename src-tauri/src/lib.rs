@@ -1201,6 +1201,15 @@ async fn chat_send(
         (None, None) => None,
     };
 
+    // Detect intent once before entering the blocking task. The same decision is
+    // also used after generation to prevent a model from emitting a duplicate
+    // clickable search action after local RAG has already run.
+    let detected_intent = chat::detect_intent(&message);
+    let retrieval_intent = matches!(
+        &detected_intent,
+        ChatIntent::SearchFiles | ChatIntent::SummarizeFile
+    );
+
     // ── Generate assistant response ──
     let app_for_gen = app.clone();
     let sid = session_id.clone();
@@ -1208,14 +1217,11 @@ async fn chat_send(
     let fc = combined_context.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<(String, Option<String>), String> {
         let state = app_for_gen.state::<AppState>();
-
-        // Detect intent
-        let intent = chat::detect_intent(&msg);
+        let intent = detected_intent;
 
         // Build RAG context if search intent (skip if files already attached).
         // Search questions already have local retrieval results, so the LLM
         // should summarize them instead of emitting a second search action.
-        let retrieval_intent = matches!(&intent, ChatIntent::SearchFiles | ChatIntent::SummarizeFile);
         let has_attached_files = fc.is_some();
         let (rag_context, assistant_file_refs) = match &intent {
             ChatIntent::SearchFiles | ChatIntent::SummarizeFile if !has_attached_files => {
@@ -1296,6 +1302,14 @@ async fn chat_send(
         // older providers. This keeps confirmation, validation, and history in
         // one code path while allowing true JSON-schema tool calls by default.
         let tool_actions = tool_calls_to_actions(&completion.tool_calls);
+        let tool_actions: Vec<FileAction> = if retrieval_intent {
+            tool_actions
+                .into_iter()
+                .filter(|action| !matches!(action, FileAction::SearchFiles { .. }))
+                .collect()
+        } else {
+            tool_actions
+        };
         let mut full_response = completion.text;
         for action in &tool_actions {
             if let Ok(json) = serde_json::to_string(action) {
@@ -1313,8 +1327,21 @@ async fn chat_send(
             }
 
             // ── AI Actions Engine ──
-            let actions = parse_actions(&response);
-            let clean_text = if actions.is_empty() {
+            // Once local RAG has supplied the evidence, a legacy provider must
+            // not turn the same request into a second clickable search action.
+            // Keep the marker-free response text, but suppress only search_files;
+            // other explicit file operations still go through confirmation.
+            let parsed_actions = parse_actions(&response);
+            let actions: Vec<FileAction> = if retrieval_intent {
+                parsed_actions
+                    .iter()
+                    .filter(|action| !matches!(action, FileAction::SearchFiles { .. }))
+                    .cloned()
+                    .collect()
+            } else {
+                parsed_actions.clone()
+            };
+            let clean_text = if parsed_actions.is_empty() {
                 response.clone()
             } else {
                 strip_action_markers(&response)
